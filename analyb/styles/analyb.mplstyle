@@ -1,0 +1,30 @@
+# Portable ATLAS-inspired defaults. Keep text.usetex disabled so plots render
+# identically on hosts without a TeX installation.
+text.usetex: False
+font.family: serif
+font.serif: DejaVu Serif, STIXGeneral, serif
+mathtext.fontset: stix
+axes.grid: True
+axes.axisbelow: line
+axes.formatter.use_mathtext: True
+axes.xmargin: 0.04
+grid.color: d0d0d0
+xtick.top: True
+xtick.direction: in
+xtick.minor.visible: True
+ytick.right: True
+ytick.direction: in
+ytick.minor.visible: True
+legend.framealpha: 1
+legend.edgecolor: 0.0
+legend.fancybox: False
+legend.frameon: False
+legend.loc: upper right
+legend.fontsize: small
+legend.labelspacing: 0.3
+legend.handlelength: 1.5
+figure.constrained_layout.use: True
+image.aspect: auto
+image.origin: lower
+pdf.fonttype: 42
+svg.fonttype: none
