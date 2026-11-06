@@ -44,10 +44,31 @@ MIN_FONT_PT = 5.0
 FLAG_FONT_PT = 7.0
 """Advisory font size at final placement (``font-below-advisory``)."""
 
+LOG_CORE_FRACTION = 1e-4
+"""``log-range``: a value is core when it is at least this fraction of the
+largest plotted value; sparse tail bins below it never set the reference."""
+LOG_BELOW_FLAG = 1.5
+LOG_BELOW_FAIL = 3.0
+"""``log-range``: decades of empty axis below the smallest core value."""
+LOG_ABOVE_FLAG = 3.5
+LOG_ABOVE_FAIL = 5.0
+"""``log-range``: decades of empty axis above the largest value; the first
+``LOG_ABOVE_FLAG`` decades are the allowance for legend and label headroom."""
+LOG_X_FLAG = 1.0
+LOG_X_FAIL = 2.0
+"""``log-range`` on a log x axis: decades of empty axis beyond either end of
+the plotted extent (no core rule: x has no tail bins)."""
+MARKER_FLAG_RATIO = 0.75
+MARKER_FAIL_RATIO = 1.0
+"""``marker-oversize``: marker diameter over the median spacing of the marker
+x positions (the bin width), flag above the first and fail above the second."""
+MARKER_MIN_POINTS = 3
+"""Fewest marker positions for which a spacing is a bin width."""
+
 SIDECAR_SCHEMA = "analyb.figcheck"
 SIDECAR_SCHEMA_VERSION = 1
 CHECKS = ("text-outside-canvas", "text-overlap", "text-over-data", "axis-unlabelled",
-          "font-below-floor", "font-below-advisory")
+          "font-below-floor", "font-below-advisory", "log-range", "marker-oversize")
 """Every check :func:`check_figure` can run; the sidecar lists those it ran."""
 
 
@@ -417,6 +438,109 @@ def _data_shapes(ax):
             yield patch, "lines", path.to_polygons(closed_only=False)
 
 
+def _decades(hi, lo):
+    return float(np.log10(hi) - np.log10(lo))
+
+
+def _axis_content(ax, axis_name):
+    """Positive finite data values plotted along ``axis_name`` (all artists)."""
+    inv = ax.transData.inverted()
+    limits = ax.get_ylim() if axis_name == "y" else ax.get_xlim()
+    col = 1 if axis_name == "y" else 0
+    values = []
+    for artist, kind, shapes in _data_shapes(ax):
+        for shape in shapes:
+            pts = shape.vertices if hasattr(shape, "vertices") else np.asarray(shape)
+            pts = pts[np.all(np.isfinite(pts), axis=1)]
+            if not len(pts):
+                continue
+            v = inv.transform(pts)[:, col]
+            v = v[np.isfinite(v) & (v > 0)]
+            if kind == "area" and len(v) and min(limits) > 0:
+                lv = np.log10(v)
+                v = v[(np.abs(lv - np.log10(min(limits))) > 1e-6)
+                      & (np.abs(lv - np.log10(max(limits))) > 1e-6)]
+            values.append(v)
+    return np.concatenate(values) if values else np.empty(0)
+
+
+def _log_range_findings(ax, index, dpi):
+    box = _inches(ax.get_window_extent(), dpi)
+    found = []
+    for name, scale in (("y", ax.get_yscale()), ("x", ax.get_xscale())):
+        if scale != "log":
+            continue
+        lo, hi = sorted(ax.get_ylim() if name == "y" else ax.get_xlim())
+        v = _axis_content(ax, name)
+        if not v.size or lo <= 0:
+            continue
+        top = float(v.max())
+        if name == "y":
+            core = float(v[v >= LOG_CORE_FRACTION * top].min())
+            below_flag, below_fail = LOG_BELOW_FLAG, LOG_BELOW_FAIL
+            above_flag, above_fail = LOG_ABOVE_FLAG, LOG_ABOVE_FAIL
+        else:
+            core = float(v.min())
+            below_flag = above_flag = LOG_X_FLAG
+            below_fail = above_fail = LOG_X_FAIL
+        below, above = max(_decades(core, lo), 0.0), max(_decades(hi, top), 0.0)
+        severity = None
+        for excess, flag, fail in ((below, below_flag, below_fail), (above, above_flag, above_fail)):
+            if excess > fail:
+                severity = "fail"
+            elif excess > flag and severity is None:
+                severity = "flag"
+        if severity is None:
+            continue
+        worst = max(below, above)
+        what = "core (values >= %.0e of the maximum)" % LOG_CORE_FRACTION if name == "y" else "extent"
+        found.append(Finding(
+            "log-range", severity, f"axes[{index}] {name} axis", box, round(worst, 2),
+            f"log {name} axis spans {lo:.3g} to {hi:.3g}; plotted {what} "
+            f"{core:.3g} to {top:.3g}: {below:.1f} empty decades below, {above:.1f} above",
+        ))
+    return found
+
+
+def _marker_oversize_findings(ax, index, dpi, final_width_cm, fig_width_in):
+    found = []
+    px_per_pt = dpi / 72
+    for line in ax.lines:
+        if not _painted(line):
+            continue
+        marker = line.get_marker()
+        size = line.get_markersize()
+        if marker in (None, "", "None", "none", " ", ",") or size <= 0:
+            continue
+        alpha = line.get_alpha()
+        if not (_line_color_painted(line.get_markerfacecolor(), alpha)
+                or (line.get_markeredgewidth() > 0
+                    and _line_color_painted(line.get_markeredgecolor(), alpha))):
+            continue
+        pts = line.get_transform().transform(line.get_path().vertices)
+        x = np.unique(pts[np.all(np.isfinite(pts), axis=1), 0])
+        if len(x) < MARKER_MIN_POINTS:
+            continue
+        spacing = float(np.median(np.diff(x)))
+        diameter = (size * (0.5 if marker == "." else 1.0) + line.get_markeredgewidth()) * px_per_pt
+        if spacing <= 0:
+            continue
+        ratio = diameter / spacing
+        if ratio <= MARKER_FLAG_RATIO:
+            continue
+        severity = "fail" if ratio > MARKER_FAIL_RATIO else "flag"
+        scale = 1.0 if final_width_cm is None else final_width_cm / (fig_width_in * 2.54)
+        name = _label(line) or "markers"
+        found.append(Finding(
+            "marker-oversize", severity, f"axes[{index}] {name}",
+            _inches(ax.get_window_extent(), dpi), round(ratio, 3),
+            f"marker diameter {diameter / px_per_pt * scale:.1f} pt is {ratio:.2f} x the bin "
+            f"width {spacing / px_per_pt * scale:.1f} pt (median x spacing of {len(x)} points"
+            f"{'' if final_width_cm is None else f' at {final_width_cm:g} cm final width'})",
+        ))
+    return found
+
+
 def _covered(item, axes):
     """Covered line/marker vertices, crossing segments, and filled areas."""
     vertices = crossings = area_vertices = 0
@@ -471,6 +595,28 @@ def check_figure(fig, *, final_width_cm=None, min_font_pt=MIN_FONT_PT, flag_font
     - ``axis-unlabelled`` (fail): a visible x or y axis shows tick labels but
       has no axis label. An axis whose tick labels are hidden (the upper panel
       of a shared x axis) needs none.
+    - ``log-range`` (flag/fail): on a visible axes with a log y (or x) scale
+      the limits leave excess empty decades around the plotted content
+      (visible lines, errorbar and step/bar artists, collections; legends
+      and invisible artists excluded; error bars count as content; reference
+      lines such as ``axhline`` do too).  y: the core is the set of positive
+      values at least ``LOG_CORE_FRACTION`` (1e-4) of the largest, so sparse
+      tail bins do not hold the floor open.  Decades from the axis bottom up
+      to the smallest core value: flag above ``LOG_BELOW_FLAG`` (1.5), fail
+      above ``LOG_BELOW_FAIL`` (3).  Decades from the largest value to the
+      axis top: flag above ``LOG_ABOVE_FLAG`` (3.5, the allowance for legend and
+      label headroom), fail above ``LOG_ABOVE_FAIL`` (5).  x: no core; decades
+      beyond either end of the plotted extent, flag above 1, fail above 2.
+      Filled-area vertices sitting on an axis limit (bar baselines) are not
+      content.  ``value`` is the worst excess in decades.
+    - ``marker-oversize`` (flag/fail): a line or errorbar artist draws markers
+      over at least ``MARKER_MIN_POINTS`` (3) x positions and the marker
+      diameter (size plus edge width) exceeds ``MARKER_FLAG_RATIO`` (0.75) of
+      the median spacing of those positions (the bin width) as a flag, or
+      ``MARKER_FAIL_RATIO`` (1.0, markers wider than a bin touch their
+      neighbours and hide the line between them) as a fail.  Markers and
+      spacing both scale with the figure, so the ratio holds at any final
+      width; ``value`` is the ratio.
     - ``font-below-floor`` (fail): only with ``final_width_cm``; the text's
       base font size scaled to the final width is below ``min_font_pt``.
       ``font-below-advisory`` (flag): at least ``min_font_pt`` but below
@@ -581,6 +727,11 @@ def check_figure(fig, *, final_width_cm=None, min_font_pt=MIN_FONT_PT, flag_font
                     _inches(ax.get_window_extent(), dpi), None,
                     f"{axis.axis_name} axis shows {len(ticks)} tick labels but has no axis label",
                 ))
+
+    for index, ax in enumerate(axes):
+        if ax.get_visible() and ax.axison:
+            findings += _log_range_findings(ax, index, dpi)
+            findings += _marker_oversize_findings(ax, index, dpi, final_width_cm, fig.get_figwidth())
 
     if final_width_cm is not None:
         scale = final_width_cm / (fig.get_figwidth() * 2.54)

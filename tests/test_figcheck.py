@@ -594,3 +594,189 @@ def test_native_cutflow_labels_meet_floor_at_compact_plotbook_placement(rows):
 
     assert ax.get_yticklabels()[0].get_fontsize() == 13  # plotbook ytick.labelsize
     assert [f for f in findings if f.severity == "fail"] == []
+
+
+# --------------------------------------------------------------------------
+# log-range and marker-oversize
+# --------------------------------------------------------------------------
+
+def _log_axes(ylim, values=None, *, kind="errorbar", size=(4, 3)):
+    """Log-y axes with 20 populated bins (14 to 1e4) and the given y limits."""
+    fig, ax = plt.subplots(figsize=size, layout="none")
+    fig.subplots_adjust(left=0.2, right=0.95, bottom=0.15, top=0.95)
+    x = np.arange(20) + 0.5
+    y = np.asarray(values if values is not None
+                   else 10 ** (1 + 3 * np.exp(-0.5 * ((x - 10) / 4) ** 2)), dtype=float)
+    if kind == "errorbar":
+        ax.errorbar(x, y, yerr=np.sqrt(y), fmt="none", color="k")
+    elif kind == "step":
+        ax.step(np.arange(21), np.append(y, y[-1]), where="post", color="k")
+    elif kind == "bars":
+        ax.bar(x, y, width=1.0, bottom=ylim[0])
+    ax.set_yscale("log")
+    ax.set_ylim(*ylim)
+    ax.set_xlim(0, 20)
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    return fig, ax
+
+
+def _range(fig):
+    return _by_check(ab.check_figure(fig), "log-range")
+
+
+@pytest.mark.parametrize("kind", ["errorbar", "step"])
+def test_log_range_passes_when_limits_show_the_data(kind):
+    fig, _ = _log_axes((1.0, 3e5), kind=kind)  # data 14..1e4: floor 1.2 decades, headroom 1.5
+    assert _range(fig) == []
+
+
+def test_log_range_flags_moderate_headroom_and_fails_extreme():
+    fig, _ = _log_axes((1.0, 1e7))  # 3 decades above the peak: routine legend headroom
+    assert _range(fig) == []
+    fig, _ = _log_axes((1.0, 1e8))  # 4 decades
+    flags = _range(fig)
+    assert [f.severity for f in flags] == ["flag"]
+    assert 3.5 < flags[0].value < 5
+    fig, _ = _log_axes((1.0, 1e13))  # the r10 p. 133 defect
+    fails = _range(fig)
+    assert [f.severity for f in fails] == ["fail"]
+    assert fails[0].value > 8 and "above" in fails[0].message
+
+
+def test_log_range_measures_the_floor_from_core_not_from_sparse_tail_bins():
+    y = 10 ** (1 + 3 * np.exp(-0.5 * ((np.arange(20) + 0.5 - 10) / 4) ** 2))
+    y[0], y[19] = 3e-3, 2e-2  # sparse tail bins, far below 1e-4 of the peak
+    fig, _ = _log_axes((1e-3, 3e4), y)
+    findings = _range(fig)
+    assert [f.severity for f in findings] == ["fail"]  # floor 1e-3 against core 14
+    assert "below" in findings[0].message
+    fig, _ = _log_axes((1.0, 3e4), y)  # the tail bins are not the reference
+    assert _range(fig) == []
+
+
+def test_log_range_flags_a_moderate_floor():
+    fig, _ = _log_axes((1e-1, 3e4), kind="step")  # 2.1 decades under the lowest step
+    assert [f.severity for f in _range(fig)] == ["flag"]
+    fig, _ = _log_axes((1e-3, 3e4), kind="step")  # 4.1 decades
+    assert [f.severity for f in _range(fig)] == ["fail"]
+
+
+def test_log_range_ignores_bar_baselines_and_all_zero_or_empty_data():
+    fig, _ = _log_axes((1.0, 3e4), kind="bars")  # baseline sits on the axis floor
+    assert _range(fig) == []
+    fig, _ = _log_axes((1e-3, 1e9), np.zeros(20))  # no positive content: nothing to compare
+    assert _range(fig) == []
+    fig, ax = plt.subplots(layout="none")
+    ax.set_yscale("log")
+    ax.set_ylim(1e-3, 1e9)
+    assert _range(fig) == []
+
+
+def test_log_range_single_populated_bin():
+    fig, _ = _log_axes((1e-3, 1e9), np.r_[np.zeros(9), 50.0, np.zeros(10)])
+    findings = _range(fig)
+    assert findings and findings[0].severity == "fail"
+
+
+def test_log_range_ignores_linear_axes_invisible_artists_and_legend_handles():
+    fig, ax = _log_axes((1.0, 3e4))
+    ax.set_yscale("linear")
+    ax.set_ylim(-1e9, 1e9)
+    assert _range(fig) == []
+    fig, ax = _log_axes((1.0, 3e4))
+    (hidden,) = ax.plot([1, 2, 3], [1e-30, 1e-30, 1e30], color="r", visible=False)
+    assert _range(fig) == []
+    ax.legend([plt.Line2D([], [], marker="o", color="b")], ["handle"])
+    assert _range(fig) == []
+
+
+def test_log_range_x_axis_extent():
+    fig, ax = plt.subplots(layout="none")
+    x = np.logspace(1, 3, 15)
+    ax.plot(x, np.ones_like(x), "o-")
+    ax.set_xscale("log")
+    ax.set_xlim(8, 1.5e3)
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    assert _range(fig) == []
+    ax.set_xlim(1e-1, 1e3)  # 2 decades below the data: flag
+    assert [f.severity for f in _range(fig)] == ["flag"]
+    ax.set_xlim(1e-3, 1e3)
+    assert [f.severity for f in _range(fig)] == ["fail"]
+
+
+def _marker_figure(n_bins, markersize, *, marker="o", figsize=(4.5, 3), xs=None):
+    fig, ax = plt.subplots(figsize=figsize, layout="none")
+    fig.subplots_adjust(left=0.15, right=0.95, bottom=0.15, top=0.95)
+    x = np.arange(n_bins) + 0.5 if xs is None else xs
+    ax.errorbar(x, 1 + np.sin(x), yerr=0.1, fmt=marker, markersize=markersize, color="k")
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    return fig
+
+
+def _markers(fig):
+    return _by_check(ab.check_figure(fig), "marker-oversize")
+
+
+def test_marker_oversize_passes_small_markers_over_wide_bins():
+    assert _markers(_marker_figure(20, 3.0)) == []
+
+
+def test_marker_oversize_ratio_boundaries_flag_then_fail():
+    # axes width 0.8 * 4.5 in = 259.2 pt; 50 bins of 5.18 pt; diameter = size + 1 pt edge
+    flag = _markers(_marker_figure(50, 3.5))  # + 1 pt default edge: 4.5 / 5.2 pt
+    assert [f.severity for f in flag] == ["flag"] and 0.75 < flag[0].value <= 1.0
+    fail = _markers(_marker_figure(50, 6.0))
+    assert [f.severity for f in fail] == ["fail"] and fail[0].value > 1.0
+    assert "x the bin width" in fail[0].message
+
+
+def test_marker_ratio_does_not_depend_on_final_width():
+    fig = _marker_figure(50, 6.0)
+    narrow = _by_check(ab.check_figure(fig, final_width_cm=8.6), "marker-oversize")
+    wide = _by_check(ab.check_figure(fig), "marker-oversize")
+    assert narrow[0].value == pytest.approx(wide[0].value)
+    assert "8.6 cm" in narrow[0].message
+
+
+def test_marker_oversize_edge_cases():
+    assert _markers(_marker_figure(2, 20.0)) == []  # two points: no bin width
+    fig, ax = plt.subplots()
+    ax.plot([0.5], [1.0], "o", markersize=30)
+    assert _markers(fig) == []  # single bin
+    fig, ax = plt.subplots()
+    ax.plot(np.arange(50) + 0.5, np.ones(50), "-")  # lines without markers
+    assert _markers(fig) == []
+    fig, ax = plt.subplots()
+    ax.plot(np.arange(50) + 0.5, np.ones(50), "o", markersize=30, visible=False)
+    assert _markers(fig) == []
+    fig, ax = plt.subplots()
+    ax.plot(np.arange(50) + 0.5, np.ones(50), "o", markersize=30, markerfacecolor="none",
+            markeredgewidth=0)
+    assert _markers(fig) == []  # nothing painted
+
+
+def test_marker_oversize_uses_median_spacing_on_log_x():
+    xs = np.logspace(0, 3, 12)  # ~20 pt apart in display units on a log axis
+    fig = _marker_figure(0, 2.0, xs=xs)
+    fig.axes[0].set_xscale("log")
+    assert _markers(fig) == []
+    fig = _marker_figure(0, 26.0, xs=xs)
+    fig.axes[0].set_xscale("log")
+    assert [f.severity for f in _markers(fig)] == ["fail"]
+
+
+def test_new_checks_are_listed_in_the_sidecar(tmp_path):
+    fig = _marker_figure(50, 6.0)
+    ab.save_figure(fig, "m", script_id="t", save_path=str(tmp_path), figure_check="warn")
+    record = json.loads((tmp_path / "t-m.figcheck.json").read_text())
+    assert {"log-range", "marker-oversize"} <= set(record["checks"])
+    assert any(f["check"] == "marker-oversize" for f in record["findings"])
+
+
+def test_tests_exercise_the_checkout_under_test():
+    import os
+    assert os.path.realpath(ab.__file__).startswith(
+        os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir)))

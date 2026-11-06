@@ -414,6 +414,8 @@ helper, call it after the final limits, scales and overlays:
 | `axis-unlabelled`: a visible x or y axis shows tick labels but has no axis label (a shared x axis with hidden tick labels needs none) | fail | `None` |
 | `font-below-floor`: base font size scaled to `final_width_cm` is below `min_font_pt` (5 pt); skipped without a final width | fail | effective size, pt |
 | `font-below-advisory`: scaled size at least `min_font_pt` but below `flag_font_pt` (7 pt) | flag | effective size, pt |
+| `log-range`: a log y axis leaves more than 1.5 (flag) or 3 (fail) empty decades below the smallest core value (values at least 1e-4 of the maximum, so sparse tail bins do not hold the floor open), or more than 3.5 (flag) or 5 (fail) above the largest value (3.5 decades are the legend/label allowance); a log x axis: more than 1 (flag) or 2 (fail) beyond either end of the data. Error bars count as data | flag / fail | worst excess, decades |
+| `marker-oversize`: marker diameter (size plus edge width) over the median spacing of the marker x positions (the bin width), for lines/errorbars with at least 3 positions; scale-free, so it needs no final width | flag above 0.75, fail above 1.0 | ratio |
 
 `where` names the axes index (`fig.axes` order) and the artist kind with a text
 snippet, for example `axes[1] xtick label '1000'` or `axes[0] legend`. `bbox`

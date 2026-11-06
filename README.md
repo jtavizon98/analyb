@@ -37,8 +37,9 @@ final scale reserve label headroom last, after those changes. A later
 linear/log/symlog scale are in place. See `CHEATSHEET.md` section 8.
 
 `check_figure()` reports mechanical layout defects (text clipped by the
-canvas, overlapping text, legends or labels over data, and text below a 5 pt
-floor or a 7 pt advisory size at a given final width) as separate findings.
+canvas, overlapping text, legends or labels over data, text below a 5 pt
+floor or a 7 pt advisory size at a given final width, log axes with absurd
+empty ranges, and markers wider than their bin) as separate findings.
 `set_figure_check("warn"|"raise")` runs it on every save and writes a
 `.figcheck.json` sidecar beside each PDF. It is off by default and never
 replaces visual review. See `CHEATSHEET.md` section 8.
