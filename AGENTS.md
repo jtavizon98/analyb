@@ -94,7 +94,9 @@ without producing an immediate error.
   placement are a decided contract: below 5 pt fails, below 7 pt is a flag.
   An axis showing tick labels without an axis label fails
   (`axis-unlabelled`: every axis is labelled; a shared x
-  axis is labelled once, under the lowest panel).
+  axis is labelled once, under the lowest panel). A filled marker shape drawn
+  hollow fails (`marker-hollow`): data markers are filled with the series
+  colour (CHEATSHEET, Data-marker style).
 
 - `printed` recording never changes typeset output, and `text` is the string
   a reader sees, not TeX source. Keep `MATCH_RULE` and `find_printed` in step

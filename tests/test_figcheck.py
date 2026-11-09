@@ -780,3 +780,46 @@ def test_tests_exercise_the_checkout_under_test():
     import os
     assert os.path.realpath(ab.__file__).startswith(
         os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir)))
+
+
+def _hollow(fig):
+    return _by_check(ab.check_figure(fig), "marker-hollow")
+
+
+def _points(**style):
+    fig, ax = plt.subplots(figsize=(4, 3))
+    ax.plot([1, 2, 3], [1, 2, 3], linestyle="none", label="data", **style)
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    return fig, ax
+
+
+def test_marker_hollow_fails_open_markers_and_background_faces():
+    for style in ({"marker": "o", "markerfacecolor": "none"}, {"marker": "s", "fillstyle": "none"},
+                  {"marker": "^", "markerfacecolor": "white", "markeredgecolor": "C0"}):
+        found = _hollow(_points(**style)[0])
+        assert [(f.severity, f.where) for f in found] == [("fail", "axes[0] data")], style
+    fig, ax = plt.subplots(figsize=(4, 3))
+    ax.errorbar([1, 2, 3], [1, 2, 3], yerr=0.1, fmt="o", mfc="none", label="data")
+    assert len(_hollow(fig)) == 1
+
+
+def test_marker_hollow_passes_filled_stroke_and_invisible_markers():
+    for style in ({"marker": "o"}, {"marker": "o", "markerfacecolor": "C1"}, {"marker": "x"},
+                  {"marker": "+", "markerfacecolor": "none"},
+                  {"marker": "o", "markerfacecolor": "none", "markeredgewidth": 0}):
+        assert _hollow(_points(**style)[0]) == [], style
+    fig, ax = _points(marker="o", markerfacecolor="white")
+    ax.set_facecolor("0.9")  # a white face on a grey axes is a visible fill
+    assert _hollow(fig) == []
+    fig, ax = plt.subplots(figsize=(4, 3))
+    ax.plot([1, 2, 3], [1, 2, 3], "-")  # a line without markers
+    assert _hollow(fig) == []
+
+
+def test_marker_hollow_is_listed_in_the_sidecar(tmp_path):
+    fig, _ = _points(marker="o", markerfacecolor="none")
+    ab.save_figure(fig, "hollow", script_id="t", save_path=str(tmp_path), figure_check="warn")
+    record = json.loads((tmp_path / "t-hollow.figcheck.json").read_text())
+    assert "marker-hollow" in record["checks"]
+    assert [f["check"] for f in record["findings"]].count("marker-hollow") == 1

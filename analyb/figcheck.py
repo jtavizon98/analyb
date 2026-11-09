@@ -28,6 +28,7 @@ from matplotlib.colors import to_rgba, to_rgba_array
 from matplotlib.figure import SubFigure
 from matplotlib.legend import Legend
 from matplotlib.lines import Line2D
+from matplotlib.markers import MarkerStyle
 from matplotlib.patches import Patch
 from matplotlib.text import Text
 from matplotlib.transforms import Bbox
@@ -68,7 +69,7 @@ MARKER_MIN_POINTS = 3
 SIDECAR_SCHEMA = "analyb.figcheck"
 SIDECAR_SCHEMA_VERSION = 1
 CHECKS = ("text-outside-canvas", "text-overlap", "text-over-data", "axis-unlabelled",
-          "font-below-floor", "font-below-advisory", "log-range", "marker-oversize")
+          "font-below-floor", "font-below-advisory", "log-range", "marker-oversize", "marker-hollow")
 """Every check :func:`check_figure` can run; the sidecar lists those it ran."""
 
 
@@ -541,6 +542,36 @@ def _marker_oversize_findings(ax, index, dpi, final_width_cm, fig_width_in):
     return found
 
 
+def _marker_hollow_findings(ax, index, dpi):
+    """Filled marker shapes drawn without a face, or with the axes background as their face."""
+    found = []
+    background = to_rgba(ax.get_facecolor())
+    for line in ax.lines:
+        marker = line.get_marker()
+        if not _painted(line) or marker in (None, "", "None", "none", " ", ",") or line.get_markersize() <= 0:
+            continue
+        if not MarkerStyle(marker).is_filled():
+            continue  # x, +, | and the like are strokes, never hollow
+        alpha = line.get_alpha()
+        if not (line.get_markeredgewidth() > 0 and _line_color_painted(line.get_markeredgecolor(), alpha)):
+            continue  # no visible edge: the marker is filled or not drawn at all
+        face = line.get_markerfacecolor()
+        if line.get_fillstyle() != "none" and _line_color_painted(face, alpha):
+            rgba = to_rgba(face, alpha)
+            if not (rgba[3] == 1 and background[3] > 0 and np.allclose(rgba[:3], background[:3])):
+                continue
+            how = "the axes background colour as face"
+        else:
+            how = "no face colour"
+        found.append(Finding(
+            "marker-hollow", "fail", f"axes[{index}] {_label(line) or 'markers'}",
+            _inches(ax.get_window_extent(), dpi), None,
+            f"filled marker '{marker}' drawn with {how}; data markers are filled with the series "
+            "colour (CHEATSHEET, Data-marker style)",
+        ))
+    return found
+
+
 def _covered(item, axes):
     """Covered line/marker vertices, crossing segments, and filled areas."""
     vertices = crossings = area_vertices = 0
@@ -617,6 +648,13 @@ def check_figure(fig, *, final_width_cm=None, min_font_pt=MIN_FONT_PT, flag_font
       neighbours and hide the line between them) as a fail.  Markers and
       spacing both scale with the figure, so the ratio holds at any final
       width; ``value`` is the ratio.
+    - ``marker-hollow`` (fail): a line or errorbar artist draws a filled
+      marker shape (circle, square, triangle, ...) with a visible edge but no
+      face, or with the axes background colour as its face (a white face on a
+      white axes, as an rc ``lines.markerfacecolor: white`` produces).  Data
+      markers are filled with the series colour (CHEATSHEET, Data-marker
+      style).  Stroke markers (``x``, ``+``, ``|``) and scatter collections
+      are not checked.
     - ``font-below-floor`` (fail): only with ``final_width_cm``; the text's
       base font size scaled to the final width is below ``min_font_pt``.
       ``font-below-advisory`` (flag): at least ``min_font_pt`` but below
@@ -732,6 +770,7 @@ def check_figure(fig, *, final_width_cm=None, min_font_pt=MIN_FONT_PT, flag_font
         if ax.get_visible() and ax.axison:
             findings += _log_range_findings(ax, index, dpi)
             findings += _marker_oversize_findings(ax, index, dpi, final_width_cm, fig.get_figwidth())
+            findings += _marker_hollow_findings(ax, index, dpi)
 
     if final_width_cm is not None:
         scale = final_width_cm / (fig.get_figwidth() * 2.54)
