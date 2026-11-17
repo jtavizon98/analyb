@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use analyb in your work, please cite it as below."
+type: software
+title: "analyb"
+abstract: "Small analysis and plotting library for TTree-based high-energy physics work: histogramming, statistics, ROOT IO, plotting, artifact comparison, cutflows, reports and provenance helpers."
+authors:
+  - given-names: "Jairo Daniel"
+    family-names: "Tavizón Raigoza"
+version: "0.1.0"
+license: MIT
+repository-code: "https://github.com/jtavizon98/analyb"
+keywords:
+  - high-energy physics
+  - data analysis
+  - plotting
+  - ROOT

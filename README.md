@@ -138,3 +138,9 @@ contents. The default sequential 2D colormap is `superheat`, registered by
 `analyb.colors` and exposed as `current_colorbar`; analysis recipes should omit
 `cmap` to inherit it and use explicit diverging maps only when the plotted
 quantity calls for one.
+
+## Citing
+
+If you use analyb in your work, cite it with the metadata in
+[`CITATION.cff`](CITATION.cff); GitHub's "Cite this repository" button exports
+it as BibTeX or APA. Give the version or commit you used.
