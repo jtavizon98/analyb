@@ -993,3 +993,11 @@ def test_save_hook_measures_at_the_pdf_layout_dpi(tmp_path):
     ab.save_figure(fig, "dpi", script_id="t", save_path=str(tmp_path), figure_check="warn")
     record = json.loads((tmp_path / "t-dpi.figcheck.json").read_text())
     assert expected and [f["message"] for f in record["findings"] if f["check"] == "log-headroom"] == expected
+
+
+def test_log_headroom_ignores_boxes_in_the_lower_half():
+    fig, ax = _house()
+    ax.legend(loc="lower center", frameon=False)  # placed under the peak: no axis top can lift it above the data
+    ax.text(0.5, 0.3, "note under the data", transform=ax.transAxes, ha="center")
+    found = _by_check(ab.check_figure(fig, log_headroom_cap=2.0), "log-headroom")
+    assert not any("reaches down" in f.message for f in found)

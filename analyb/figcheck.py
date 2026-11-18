@@ -709,8 +709,8 @@ def _log_headroom_findings(ax, index, items, dpi, cap):
             continue
         box = item.extent
         cx, cy = 0.5 * (box.x0 + box.x1), 0.5 * (box.y0 + box.y1)
-        if not (frame.x0 <= cx <= frame.x1 and frame.y0 <= cy <= frame.y1):
-            continue
+        if not (frame.x0 <= cx <= frame.x1 and frame.y0 + 0.5 * frame.height <= cy <= frame.y1):
+            continue   # outside the frame, or in its lower half: placed under or among the data, not hung from the top
         frac = (box.y0 - frame.y0) / frame.height
         y_data = _top_under(shapes, box.x0, box.x1, frame)
         if y_data is None or frac <= 0:
@@ -818,10 +818,13 @@ def check_figure(fig, *, final_width_cm=None, min_font_pt=MIN_FONT_PT, flag_font
       exceed ``log_headroom_cap``, or are fewer than the need (a box reaches
       down into the data; unlike ``text-over-data`` this includes filled
       stacks). The need is the smallest axis top at which
-      every legend or text inside the frame sits above the data under its
+      every legend or text in the upper half of the frame (centre above the
+      middle: hung from the top) sits above the data under its
       horizontal span, with each box kept at its place in axes fraction
       (``loc=`` legends, ``transAxes`` texts; text placed in data coordinates
-      moves with the limits and is measured where it is). Run it after every
+      moves with the limits and is measured where it is). A box in the lower
+      half (``loc='lower center'`` under a peak) cannot be cleared by raising
+      the top and is left to ``text-over-data``. Run it after every
       limit change, like ``log-range``: a floor moved after the headroom fit
       changes the result. Text extents depend on ``fig.dpi``, and a legend edge
       near a bin edge can move the need by tenths of a decade, so measure at
