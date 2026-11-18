@@ -61,7 +61,9 @@ def save_figure(
     same and then raises ``FigureCheckError`` if any finding fails; ``False``
     disables the check; ``None`` inherits the configured mode (default off).
     ``final_width_cm`` overrides ``config.get_figure_final_width_cm()``; the
-    font-floor check runs only when one of them is set.
+    font-floor check runs only when one of them is set. The layout rules
+    of ``config.set_figure_layout_rules`` (legend and label inside the axes,
+    fitted log headroom) apply to every save.
     """
     return _save_figure(
         fig, save_name, script_id, save_path, svg, verbose=verbose,
@@ -81,7 +83,8 @@ def _save_figure(
     # Measure before saving: savefig restores a figure without a layout engine
     # to the rc default (constrained here), so the post-save state can differ
     # from what was written.
-    findings = figcheck.check_figure(fig, final_width_cm=final_width_cm) if mode else []
+    rules = config.get_figure_layout_rules()
+    findings = figcheck.check_figure(fig, final_width_cm=final_width_cm, **rules) if mode else []
     sid = script_id or config.get_script_id()
     base = save_path if save_path is not None else (config.get_save_path() or os.path.join(os.getcwd(), "plots"))
     os.makedirs(base, exist_ok=True)
@@ -99,7 +102,7 @@ def _save_figure(
     if verbose:
         logger.info("Saved plot: %s", pdf_path)
     if mode:
-        figcheck.write_sidecar(fig, pdf_path, findings, final_width_cm=final_width_cm)
+        figcheck.write_sidecar(fig, pdf_path, findings, final_width_cm=final_width_cm, **rules)
     plt.close(fig)
     if mode == "raise" and any(f.severity == "fail" for f in findings):
         raise figcheck.FigureCheckError(pdf_path, findings)

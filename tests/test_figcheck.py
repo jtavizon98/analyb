@@ -21,6 +21,7 @@ def _analyb_style_on_matplotlib_defaults():
         yield
     config.set_figure_check(None)
     config.set_figure_final_width_cm(None)
+    config.set_figure_layout_rules()
     plt.close("all")
 
 
@@ -505,7 +506,7 @@ def test_save_hook_warn_logs_and_writes_sidecar(tmp_path, caplog):
     assert record["final_width_cm"] == 3.0
     assert record["min_font_pt"] == 5.0
     assert record["flag_font_pt"] == 7.0
-    assert record["checks_skipped"] == []
+    assert record["checks_skipped"] == ["legend-outside-axes", "label-outside-axes", "log-headroom"]
     checks = {f["check"] for f in record["findings"]}
     assert {"text-outside-canvas", "font-below-floor"} <= checks
     assert set(record["findings"][0]) == {"check", "severity", "where", "bbox", "value", "message"}
@@ -525,7 +526,8 @@ def test_save_hook_raise_saves_first_then_raises(tmp_path):
     assert all(f.severity in {"fail", "flag"} for f in excinfo.value.findings)
     record = json.loads((tmp_path / "t-raise.figcheck.json").read_text())
     assert record["final_width_cm"] is None
-    assert record["checks_skipped"] == ["font-below-floor", "font-below-advisory"]
+    assert record["checks_skipped"] == ["font-below-floor", "font-below-advisory", "legend-outside-axes",
+                                        "label-outside-axes", "log-headroom"]
 
 
 def test_save_hook_raise_passes_clean_figure_and_per_call_override(tmp_path):
@@ -823,3 +825,158 @@ def test_marker_hollow_is_listed_in_the_sidecar(tmp_path):
     record = json.loads((tmp_path / "t-hollow.figcheck.json").read_text())
     assert "marker-hollow" in record["checks"]
     assert [f["check"] for f in record["findings"]].count("marker-hollow") == 1
+
+
+# --------------------------------------------------------------------------
+# Layout conventions: legend and label inside the axes, fitted log headroom
+# --------------------------------------------------------------------------
+
+LAYOUT_CHECKS = ("legend-outside-axes", "label-outside-axes", "log-headroom")
+
+
+def _layout(fig, cap=2.0):
+    found = ab.check_figure(fig, inside_axes=True, log_headroom_cap=cap)
+    return [(f.check, f.where) for f in found if f.check in LAYOUT_CHECKS]
+
+
+def _spectrum():
+    edges = np.linspace(0, 300, 31)
+    centres = 0.5 * (edges[1:] + edges[:-1])
+    return edges, 3e3 * np.exp(-0.5 * ((centres - 95) / 28) ** 2) + 40 * np.exp(-centres / 90)
+
+
+def _clears(fig, ax, edges, y):
+    """Independent of figcheck: every in-axes text and legend sits above the steps under it.
+    A frameless legend is measured without its border padding, as figcheck documents."""
+    fig.draw_without_rendering()
+    to_px = ax.transData.transform
+    boxes = [t.get_window_extent() for t in ax.texts]
+    leg = ax.get_legend()
+    if leg:
+        pad = leg.borderpad * leg.prop.get_size_in_points() * fig.dpi / 72
+        boxes.append(leg.get_window_extent().padded(-pad))
+    for box in boxes:
+        x0, x1 = ax.transData.inverted().transform([(box.x0, 0), (box.x1, 0)])[:, 0]
+        under = (edges[1:] >= x0) & (edges[:-1] <= x1)
+        if under.any() and to_px((0, y[under].max()))[1] >= box.y0:
+            return False
+    return True
+
+
+def _house(*, lo=None, top=None, legend=dict(loc="upper right"), label=(0.04, 0.95), entries=2):
+    """Log-y step histogram in the house layout; headroom fitted to label and legend unless ``top``."""
+    fig, ax = plt.subplots(figsize=(4, 3), layout="none")
+    fig.subplots_adjust(left=0.18, right=0.95, bottom=0.16, top=0.95)
+    edges, y = _spectrum()
+    for i in range(entries):
+        ax.stairs(y * (1 + 0.02 * i), edges, label=f"Sample {i}")
+    ax.set_yscale("log")
+    ax.set_xlabel("x [GeV]")
+    ax.set_ylabel("Events")
+    ax.set_xlim(edges[0], edges[-1])
+    ax.text(*label, "ATLAS Simulation Internal", transform=ax.transAxes, va="top")
+    ax.legend(frameon=False, **legend)
+    peak = 1.02 ** (entries - 1) * y.max()
+    floor = lo if lo is not None else 0.5 * y.min()
+    if top is not None:
+        ax.set_ylim(floor, top)
+        return fig, ax
+    decades = 0.0
+    ax.set_ylim(floor, peak)
+    while not _clears(fig, ax, edges, y * 1.02 ** (entries - 1)):
+        decades += 0.05
+        ax.set_ylim(floor, peak * 10 ** decades)
+    return fig, ax
+
+
+def test_layout_checks_are_off_by_default():
+    fig, ax = _house(top=1e9)
+    ax.legend(loc="upper left", bbox_to_anchor=(1.0, 1.0))
+    assert [f for f in ab.check_figure(fig) if f.check in LAYOUT_CHECKS] == []
+
+
+def test_house_figure_with_fitted_headroom_passes():
+    fig, _ = _house()
+    assert _layout(fig) == []
+
+
+def test_legend_anchored_outside_the_axes_fails():
+    fig, ax = _house()
+    ax.legend(loc="upper left", bbox_to_anchor=(1.0, 1.0), frameon=False)  # in the right margin
+    fig.subplots_adjust(right=0.6)
+    assert ("legend-outside-axes", "axes[0] legend") in _layout(fig, cap=None)
+    fig, ax = _house()
+    ax.get_legend().remove()
+    fig.legend(loc="upper center", ncols=2, frameon=False)  # figure legend above the frame
+    fig.subplots_adjust(top=0.8)
+    assert ("legend-outside-axes", "figure legend") in _layout(fig, cap=None)
+
+
+def test_label_above_the_frame_fails_and_other_text_there_does_not():
+    fig, ax = _house()
+    ax.texts[0].set_position((0.0, 1.02))
+    ax.texts[0].set_verticalalignment("bottom")
+    fig.subplots_adjust(top=0.85)
+    assert [c for c, _ in _layout(fig, cap=None)] == ["label-outside-axes"]
+    fig, ax = _house()
+    ax.texts[0].set_text(r"$\bf{\it{ATLAS}}$ Simulation Internal")  # MathText form of the label
+    ax.texts[0].set_position((0.0, 1.02))
+    ax.texts[0].set_verticalalignment("bottom")
+    fig.subplots_adjust(top=0.85)
+    assert [c for c, _ in _layout(fig, cap=None)] == ["label-outside-axes"]
+    fig, ax = _house()
+    ax.set_title("Leading jet")  # a title is not the experiment label
+    fig.subplots_adjust(top=0.85)
+    assert _layout(fig, cap=None) == []
+
+
+def test_log_headroom_beyond_the_need_fails():
+    fig, ax = _house()
+    lo, hi = ax.get_ylim()
+    fig, _ = _house(top=hi * 10 ** 0.2)  # within the slack
+    assert _layout(fig) == []
+    fig, _ = _house(top=hi * 10 ** 0.6)
+    found = _by_check(ab.check_figure(fig, log_headroom_cap=2.0), "log-headroom")
+    assert len(found) == 1 and 0.5 < found[0].value < 0.7 and "need" in found[0].message
+
+
+def test_log_headroom_over_the_data_fails():
+    fig, ax = _house()
+    lo, hi = ax.get_ylim()
+    fig, _ = _house(top=hi * 10 ** -0.5)
+    found = _by_check(ab.check_figure(fig, log_headroom_cap=2.0), "log-headroom")
+    assert len(found) == 1 and "reaches down into the data" in found[0].message
+
+
+def test_log_headroom_cap_fails_a_legend_that_needs_too_much():
+    fig, _ = _house(entries=12)  # a tall legend: fitted, but well over two decades
+    found = _by_check(ab.check_figure(fig, log_headroom_cap=2.0), "log-headroom")
+    assert len(found) == 1 and "cap of 2" in found[0].message
+    assert _by_check(ab.check_figure(fig, log_headroom_cap=10.0), "log-headroom") == []
+
+
+def test_log_headroom_catches_a_floor_moved_after_the_fit():
+    fig, ax = _house(lo=1e-2)  # fitted with a deep floor
+    assert _layout(fig) == []
+    ax.set_ylim(bottom=10.0)  # a later hook raises the floor and keeps the top
+    found = _by_check(ab.check_figure(fig, log_headroom_cap=2.0), "log-headroom")
+    assert len(found) == 1 and "beyond" in found[0].message
+
+
+def test_layout_rules_reach_the_save_hook_and_sidecar(tmp_path):
+    fig, ax = _house()
+    ax.texts[0].set_position((0.0, 1.02))
+    ax.texts[0].set_verticalalignment("bottom")
+    fig.subplots_adjust(top=0.85)
+    ab.set_figure_layout_rules(inside_axes=True, log_headroom_cap=2.0)
+    ab.save_figure(fig, "rules", script_id="t", save_path=str(tmp_path), figure_check="warn")
+    record = json.loads((tmp_path / "t-rules.figcheck.json").read_text())
+    assert set(LAYOUT_CHECKS) <= set(record["checks"])
+    assert record["inside_axes"] is True and record["log_headroom_cap"] == 2.0
+    # the label left the fitted layout, so the headroom it needed is now excess too
+    assert sorted(f["check"] for f in record["findings"] if f["check"] in LAYOUT_CHECKS) == [
+        "label-outside-axes", "log-headroom"]
+    with pytest.raises(ValueError):
+        ab.set_figure_layout_rules(log_headroom_cap=0)
+    with pytest.raises(ValueError):
+        ab.check_figure(fig, log_headroom_cap=float("nan"))

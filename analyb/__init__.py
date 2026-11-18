@@ -32,6 +32,7 @@ from .config import (
     set_save_png_dpi, get_save_png_dpi,
     set_figure_check, get_figure_check,
     set_figure_final_width_cm, get_figure_final_width_cm,
+    set_figure_layout_rules, get_figure_layout_rules,
     fig_size_square, fig_size_2d, fig_size_wide,
 )
 from .io import (
@@ -98,6 +99,7 @@ __all__ = [
     "set_save_png_dpi", "get_save_png_dpi",
     "set_figure_check", "get_figure_check",
     "set_figure_final_width_cm", "get_figure_final_width_cm",
+    "set_figure_layout_rules", "get_figure_layout_rules",
     "fig_size_square", "fig_size_2d", "fig_size_wide",
     "load_tree", "load_trees", "save_df_as_tree",
     "iterate_tree",

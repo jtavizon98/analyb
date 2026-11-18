@@ -395,8 +395,8 @@ performed.
 
 ### Figure lint (mechanical geometry checks)
 
-`check_figure(fig, *, final_width_cm=None, min_font_pt=5.0, flag_font_pt=7.0)`
-lays the figure
+`check_figure(fig, *, final_width_cm=None, min_font_pt=5.0, flag_font_pt=7.0,
+inside_axes=False, log_headroom_cap=None)` lays the figure
 out once with `Figure.draw_without_rendering()` and returns a list of
 `Finding(check, severity, where, bbox, value, message)`. Like the headroom
 helper, call it after the final limits, scales and overlays:
@@ -418,6 +418,28 @@ helper, call it after the final limits, scales and overlays:
 | `marker-oversize`: marker diameter (size plus edge width) over the median spacing of the marker x positions (the bin width), for lines/errorbars with at least 3 positions; scale-free, so it needs no final width | flag above 0.75, fail above 1.0 | ratio |
 | `marker-hollow`: a line or errorbar draws a filled marker shape (circle, square, triangle) with a visible edge but no face, or with the axes background colour as face (a white face on white axes, as `lines.markerfacecolor: white` in an rc file produces); see Data-marker style. Stroke markers (`x`, `+`) and scatter are not checked | fail | `None` |
 
+Layout conventions are opt-in, because they are a house style rather than a
+defect: `inside_axes=True` runs the first two, `log_headroom_cap=<decades>`
+the third.
+
+| `check` | severity | `value` |
+| --- | --- | --- |
+| `legend-outside-axes`: an axes or figure legend lies inside no visible axes frame | fail | `None` |
+| `label-outside-axes`: a text starting with `ATLAS` (MathText markup ignored; `figcheck.LABEL_PATTERN`) lies inside no visible axes frame, so a crop can cut it | fail | `None` |
+| `log-headroom`: on a log y axis, the empty decades above the largest plotted value are fewer than the panel's legends and texts need (a box reaches into the data, filled stacks included), exceed that need by more than 0.3 (`LOG_HEADROOM_SLACK`), or exceed `log_headroom_cap` | fail | shortfall, excess or headroom, decades |
+
+The need is the smallest axis top at which every legend or text inside the
+frame sits above the highest data under its horizontal span, each box kept at
+its place in axes fraction (`loc=` legends, `transAxes` texts); a frameless
+legend is measured without its border padding. Run it on the final limits:
+a floor raised after the headroom was fitted leaves the top where it was and
+the need lower, so the check fails it. A legend that needs more than the cap
+is shrunk (shorter entries, more columns), not given a taller axis. On every
+save:
+
+    ab.set_figure_check("warn")
+    ab.set_figure_layout_rules(inside_axes=True, log_headroom_cap=2.0)
+
 `where` names the axes index (`fig.axes` order) and the artist kind with a text
 snippet, for example `axes[1] xtick label '1000'` or `axes[0] legend`. `bbox`
 is `(x0, y0, x1, y1)` in figure inches from the canvas lower-left corner. Each
@@ -437,7 +459,7 @@ to skip) and `final_width_cm` override the configuration:
 Both modes log each finding at WARNING and write `<pdf stem>.figcheck.json`
 beside the PDF with `schema`, `schema_version`, `pdf`, `pdf_sha256`,
 `figure_size_in`, `figure_width_cm`, `final_width_cm`, `min_font_pt`,
-`flag_font_pt`,
+`flag_font_pt`, `inside_axes`, `log_headroom_cap`,
 `bbox_units`, `checks_skipped`, `checks` (the checks that ran) and `findings`. The figure is measured
 immediately before it is saved. Flags never raise.
 

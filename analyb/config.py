@@ -114,6 +114,26 @@ def get_figure_final_width_cm():
     return _figure_final_width_cm_var.get()
 
 
+# Layout conventions checked at save time (analyb.figcheck, opt-in).
+_figure_inside_axes_var = contextvars.ContextVar("analyb_figure_inside_axes", default=False)
+_figure_log_headroom_cap_var = contextvars.ContextVar("analyb_figure_log_headroom_cap", default=None)
+
+
+def set_figure_layout_rules(inside_axes=False, log_headroom_cap=None):
+    """Turn on ``legend-outside-axes``/``label-outside-axes`` and ``log-headroom``."""
+    if log_headroom_cap is not None:
+        log_headroom_cap = float(log_headroom_cap)
+        if not 0 < log_headroom_cap < float("inf"):
+            raise ValueError(f"log headroom cap must be a positive finite number of decades, got {log_headroom_cap!r}")
+    _figure_inside_axes_var.set(bool(inside_axes))
+    _figure_log_headroom_cap_var.set(log_headroom_cap)
+
+
+def get_figure_layout_rules():
+    return {"inside_axes": _figure_inside_axes_var.get(),
+            "log_headroom_cap": _figure_log_headroom_cap_var.get()}
+
+
 # Single output root file per script: {save_path}/{script_id}-output.root
 _output_root_var = contextvars.ContextVar("analyb_output_root", default=None)
 

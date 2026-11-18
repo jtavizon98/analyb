@@ -65,12 +65,21 @@ MARKER_FAIL_RATIO = 1.0
 x positions (the bin width), flag above the first and fail above the second."""
 MARKER_MIN_POINTS = 3
 """Fewest marker positions for which a spacing is a bin width."""
+LABEL_PATTERN = r"ATLAS\b"
+"""``label-outside-axes``: a text whose plain content starts with this regex is
+an experiment label."""
+LOG_HEADROOM_SLACK = 0.3
+"""``log-headroom``: decades of empty log-y axis allowed beyond what the
+panel's legends and texts need to clear the data."""
 
 SIDECAR_SCHEMA = "analyb.figcheck"
 SIDECAR_SCHEMA_VERSION = 1
 CHECKS = ("text-outside-canvas", "text-overlap", "text-over-data", "axis-unlabelled",
-          "font-below-floor", "font-below-advisory", "log-range", "marker-oversize", "marker-hollow")
+          "font-below-floor", "font-below-advisory", "log-range", "marker-oversize", "marker-hollow",
+          "legend-outside-axes", "label-outside-axes", "log-headroom")
 """Every check :func:`check_figure` can run; the sidecar lists those it ran."""
+INSIDE_AXES_CHECKS = ("legend-outside-axes", "label-outside-axes")
+"""Checks run only with ``inside_axes=True`` (a layout convention, not a defect)."""
 
 
 @dataclass(frozen=True)
@@ -603,6 +612,140 @@ def _covered(item, axes):
 
 
 # --------------------------------------------------------------------------
+# Layout conventions (opt-in): placement inside the axes, fitted log headroom
+# --------------------------------------------------------------------------
+
+def _plain(text):
+    """Text content without MathText markup: ``$\\bf{\\it{ATLAS}}$ Sim`` -> ``ATLAS Sim``."""
+    text = _MATHDEFAULT.sub(r"\1", text)
+    text = re.sub(r"\\[A-Za-z]+", " ", text)
+    return " ".join(re.sub(r"[${}]", " ", text).split())
+
+
+def _frames(axes):
+    return [ax.get_window_extent() for ax in axes if ax.get_visible() and ax.axison]
+
+
+def _within(box, frame, tol):
+    return (box.x0 >= frame.x0 - tol and box.x1 <= frame.x1 + tol
+            and box.y0 >= frame.y0 - tol and box.y1 <= frame.y1 + tol)
+
+
+def _outside_findings(items, axes, dpi, tol):
+    """Legends and experiment labels whose box lies inside no axes frame."""
+    frames = _frames(axes)
+    pattern = re.compile(LABEL_PATTERN)
+    found = []
+    for item in items:
+        if item.legend is not None and item.text is None:
+            check, what = "legend-outside-axes", "legend"
+        elif item.text is not None and item.legend is None and pattern.match(_plain(item.text.get_text())):
+            check, what = "label-outside-axes", f"label '{_snippet(item.text.get_text())}'"
+        else:
+            continue
+        if any(_within(item.extent, frame, tol) for frame in frames):
+            continue
+        found.append(Finding(
+            check, "fail", item.where, _inches(item.extent, dpi), None,
+            f"{what} is not inside any axes frame; legends and the experiment label sit inside "
+            "the plot so a crop cannot cut them",
+        ))
+    return found
+
+
+def _top_under(shapes, x0, x1, frame):
+    """Highest display y of plotted data within the display x range [x0, x1]
+    (segments are clipped to the range, so a step spanning it counts)."""
+    best = None
+    for kind, pts in shapes:
+        pts = pts[np.all(np.isfinite(pts), axis=1)]
+        if not len(pts):
+            continue
+        if kind == "points" or len(pts) == 1:
+            sel = pts[(pts[:, 0] >= x0) & (pts[:, 0] <= x1), 1]
+        else:
+            a, b = pts[:-1], pts[1:]
+            lo_x, hi_x = np.minimum(a[:, 0], b[:, 0]), np.maximum(a[:, 0], b[:, 0])
+            keep = (hi_x >= x0) & (lo_x <= x1)
+            a, b = a[keep], b[keep]
+            if not len(a):
+                continue
+            dx = b[:, 0] - a[:, 0]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                t0 = np.clip(np.where(dx != 0, (x0 - a[:, 0]) / dx, 0.0), 0, 1)
+                t1 = np.clip(np.where(dx != 0, (x1 - a[:, 0]) / dx, 1.0), 0, 1)
+            ya = a[:, 1] + np.minimum(t0, t1) * (b[:, 1] - a[:, 1])
+            yb = a[:, 1] + np.maximum(t0, t1) * (b[:, 1] - a[:, 1])
+            sel = np.concatenate([ya, yb])
+        sel = sel[sel <= frame.y1]
+        if sel.size:
+            best = float(sel.max()) if best is None else max(best, float(sel.max()))
+    return best
+
+
+def _log_headroom_findings(ax, index, items, dpi, cap):
+    """Empty decades above the data against what the panel's legends and texts need."""
+    if ax.get_yscale() != "log":
+        return []
+    lo, hi = sorted(ax.get_ylim())
+    v = _axis_content(ax, "y")
+    if not v.size or lo <= 0:
+        return []
+    top = float(v.max())
+    above = max(_decades(hi, top), 0.0)
+    frame = ax.get_window_extent()
+    inv = ax.transData.inverted()
+    shapes = []
+    for _, kind, arrays in _data_shapes(ax):
+        for arr in arrays:
+            if hasattr(arr, "to_polygons"):
+                shapes += [("lines", poly) for poly in arr.to_polygons(closed_only=False)]
+            else:
+                shapes.append((kind, np.asarray(arr)))
+    log_lo, need_top = np.log10(lo), np.log10(top)
+    reasons = []
+    for item in items:
+        if not item.overlay or item.extent.width <= 0:
+            continue
+        box = item.extent
+        cx, cy = 0.5 * (box.x0 + box.x1), 0.5 * (box.y0 + box.y1)
+        if not (frame.x0 <= cx <= frame.x1 and frame.y0 <= cy <= frame.y1):
+            continue
+        frac = (box.y0 - frame.y0) / frame.height
+        y_data = _top_under(shapes, box.x0, box.x1, frame)
+        if y_data is None or frac <= 0:
+            continue
+        under = inv.transform((cx, y_data))[1]
+        if not under > lo:
+            continue
+        needed = log_lo + (np.log10(under) - log_lo) / frac
+        if needed > need_top:
+            need_top, reasons = needed, [item.where]
+    need = max(float(need_top - np.log10(top)), 0.0)
+    box = _inches(frame, dpi)
+    found = []
+    if need > above + 0.01:
+        found.append(Finding(
+            "log-headroom", "fail", f"axes[{index}] y axis", box, round(need - above, 2),
+            f"{reasons[0]} reaches down into the data: it needs {need:.2f} empty decades above the "
+            f"data and the axis leaves {above:.2f}",
+        ))
+    elif above - need > LOG_HEADROOM_SLACK:
+        found.append(Finding(
+            "log-headroom", "fail", f"axes[{index}] y axis", box, round(above - need, 2),
+            f"{above:.2f} empty decades above the data; the legends and texts need {need:.2f}"
+            f"{' (' + reasons[0] + ')' if reasons else ''}; more than {LOG_HEADROOM_SLACK:g} beyond it",
+        ))
+    if cap is not None and above > cap:
+        found.append(Finding(
+            "log-headroom", "fail", f"axes[{index}] y axis", box, round(above, 2),
+            f"{above:.2f} empty decades above the data exceed the cap of {cap:g}; shrink the legend "
+            "(shorter entries, more columns) instead of raising the axis",
+        ))
+    return found
+
+
+# --------------------------------------------------------------------------
 # Checks
 # --------------------------------------------------------------------------
 
@@ -610,7 +753,8 @@ def _inches(bbox, dpi):
     return tuple(round(float(v) / dpi, 4) for v in bbox.extents)
 
 
-def check_figure(fig, *, final_width_cm=None, min_font_pt=MIN_FONT_PT, flag_font_pt=FLAG_FONT_PT):
+def check_figure(fig, *, final_width_cm=None, min_font_pt=MIN_FONT_PT, flag_font_pt=FLAG_FONT_PT,
+                 inside_axes=False, log_headroom_cap=None):
     """Return mechanical layout findings for ``fig`` after one layout pass.
 
     Checks visible text, legends and plotted data; empty strings are ignored.
@@ -661,6 +805,26 @@ def check_figure(fig, *, final_width_cm=None, min_font_pt=MIN_FONT_PT, flag_font
       ``flag_font_pt``.
       MathText sub/superscripts are not measured separately.
 
+    Layout conventions, opt-in because they are a style, not a defect:
+
+    - ``legend-outside-axes`` (fail, ``inside_axes=True``): a legend box (axes
+      or figure legend) lies inside no visible axes frame.
+    - ``label-outside-axes`` (fail, ``inside_axes=True``): a text whose plain
+      content starts with ``LABEL_PATTERN`` ("ATLAS") lies inside no visible
+      axes frame. Above the frame such a label is cut by a tight crop.
+    - ``log-headroom`` (fail, with ``log_headroom_cap``): on a log y axis the
+      empty decades above the largest plotted value exceed what the panel's
+      legends and texts need by more than ``LOG_HEADROOM_SLACK`` (0.3), or
+      exceed ``log_headroom_cap``, or are fewer than the need (a box reaches
+      down into the data; unlike ``text-over-data`` this includes filled
+      stacks). The need is the smallest axis top at which
+      every legend or text inside the frame sits above the data under its
+      horizontal span, with each box kept at its place in axes fraction
+      (``loc=`` legends, ``transAxes`` texts; text placed in data coordinates
+      moves with the limits and is measured where it is). Run it after every
+      limit change, like ``log-range``: a floor moved after the headroom fit
+      changes the result.
+
     Parameters
     ----------
     fig : matplotlib.figure.Figure
@@ -671,6 +835,10 @@ def check_figure(fig, *, final_width_cm=None, min_font_pt=MIN_FONT_PT, flag_font
         Blocking font floor at final placement (default 5 pt).
     flag_font_pt : float
         Advisory font size at final placement (default 7 pt).
+    inside_axes : bool
+        Run ``legend-outside-axes`` and ``label-outside-axes``.
+    log_headroom_cap : float, optional
+        Run ``log-headroom`` with this cap in decades.
 
     Returns
     -------
@@ -682,6 +850,8 @@ def check_figure(fig, *, final_width_cm=None, min_font_pt=MIN_FONT_PT, flag_font
         raise ValueError("min_font_pt must be a positive finite number")
     if not (np.isfinite(flag_font_pt) and flag_font_pt >= min_font_pt):
         raise ValueError("flag_font_pt must be finite and at least min_font_pt")
+    if log_headroom_cap is not None and not (np.isfinite(log_headroom_cap) and log_headroom_cap > 0):
+        raise ValueError("log_headroom_cap must be a positive finite number of decades")
 
     fig.draw_without_rendering()
     dpi = fig.dpi
@@ -771,6 +941,11 @@ def check_figure(fig, *, final_width_cm=None, min_font_pt=MIN_FONT_PT, flag_font
             findings += _log_range_findings(ax, index, dpi)
             findings += _marker_oversize_findings(ax, index, dpi, final_width_cm, fig.get_figwidth())
             findings += _marker_hollow_findings(ax, index, dpi)
+            if log_headroom_cap is not None:
+                findings += _log_headroom_findings(ax, index, items, dpi, log_headroom_cap)
+
+    if inside_axes:
+        findings += _outside_findings(items, axes, dpi, tol)
 
     if final_width_cm is not None:
         scale = final_width_cm / (fig.get_figwidth() * 2.54)
@@ -797,6 +972,16 @@ def check_figure(fig, *, final_width_cm=None, min_font_pt=MIN_FONT_PT, flag_font
 # Save hook
 # --------------------------------------------------------------------------
 
+def _ran(check, final_width_cm, inside_axes, log_headroom_cap):
+    if check.startswith("font-below"):
+        return final_width_cm is not None
+    if check in INSIDE_AXES_CHECKS:
+        return bool(inside_axes)
+    if check == "log-headroom":
+        return log_headroom_cap is not None
+    return True
+
+
 def sidecar_path(pdf_path):
     """Return ``<pdf stem>.figcheck.json`` beside ``pdf_path``."""
     return os.path.splitext(pdf_path)[0] + ".figcheck.json"
@@ -805,6 +990,7 @@ def sidecar_path(pdf_path):
 def write_sidecar(
     fig, pdf_path, findings, *, final_width_cm=None,
     min_font_pt=MIN_FONT_PT, flag_font_pt=FLAG_FONT_PT,
+    inside_axes=False, log_headroom_cap=None,
 ):
     """Log ``findings`` and write ``<pdf stem>.figcheck.json`` beside ``pdf_path``.
 
@@ -829,11 +1015,10 @@ def write_sidecar(
         "min_font_pt": min_font_pt,
         "flag_font_pt": flag_font_pt,
         "bbox_units": "figure inches from the canvas lower-left corner",
-        "checks_skipped": (
-            [] if final_width_cm is not None else ["font-below-floor", "font-below-advisory"]
-        ),
-        "checks": [c for c in CHECKS
-                   if final_width_cm is not None or not c.startswith("font-below")],
+        "inside_axes": bool(inside_axes),
+        "log_headroom_cap": log_headroom_cap,
+        "checks_skipped": [c for c in CHECKS if not _ran(c, final_width_cm, inside_axes, log_headroom_cap)],
+        "checks": [c for c in CHECKS if _ran(c, final_width_cm, inside_axes, log_headroom_cap)],
         "findings": [f.to_dict() for f in findings],
     }
     path = sidecar_path(pdf_path)
