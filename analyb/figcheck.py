@@ -823,7 +823,9 @@ def check_figure(fig, *, final_width_cm=None, min_font_pt=MIN_FONT_PT, flag_font
       (``loc=`` legends, ``transAxes`` texts; text placed in data coordinates
       moves with the limits and is measured where it is). Run it after every
       limit change, like ``log-range``: a floor moved after the headroom fit
-      changes the result.
+      changes the result. Text extents depend on ``fig.dpi``, and a legend edge
+      near a bin edge can move the need by tenths of a decade, so measure at
+      the dpi of the artifact; the save hook measures at 72, the PDF layout dpi.
 
     Parameters
     ----------

@@ -84,7 +84,16 @@ def _save_figure(
     # to the rc default (constrained here), so the post-save state can differ
     # from what was written.
     rules = config.get_figure_layout_rules()
-    findings = figcheck.check_figure(fig, final_width_cm=final_width_cm, **rules) if mode else []
+    findings = []
+    if mode:
+        # Measure at the layout dpi of the PDF backend (72): text extents depend on the dpi, so a
+        # legend edge near a bin edge can change the log-headroom need between the figure's dpi and the PDF.
+        dpi = fig.dpi
+        fig.set_dpi(72)
+        try:
+            findings = figcheck.check_figure(fig, final_width_cm=final_width_cm, **rules)
+        finally:
+            fig.set_dpi(dpi)
     sid = script_id or config.get_script_id()
     base = save_path if save_path is not None else (config.get_save_path() or os.path.join(os.getcwd(), "plots"))
     os.makedirs(base, exist_ok=True)

@@ -980,3 +980,16 @@ def test_layout_rules_reach_the_save_hook_and_sidecar(tmp_path):
         ab.set_figure_layout_rules(log_headroom_cap=0)
     with pytest.raises(ValueError):
         ab.check_figure(fig, log_headroom_cap=float("nan"))
+
+
+def test_save_hook_measures_at_the_pdf_layout_dpi(tmp_path):
+    # Text extents depend on the dpi; the PDF backend lays the page out at 72 dpi.
+    fig, ax = _house(top=1e7)
+    fig.set_dpi(600)
+    ab.set_figure_layout_rules(log_headroom_cap=10.0)
+    ref, _ = _house(top=1e7)
+    ref.set_dpi(72)
+    expected = [f.message for f in ab.check_figure(ref, log_headroom_cap=10.0) if f.check == "log-headroom"]
+    ab.save_figure(fig, "dpi", script_id="t", save_path=str(tmp_path), figure_check="warn")
+    record = json.loads((tmp_path / "t-dpi.figcheck.json").read_text())
+    assert expected and [f["message"] for f in record["findings"] if f["check"] == "log-headroom"] == expected
