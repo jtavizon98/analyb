@@ -147,7 +147,7 @@ ratioed together; density rebinning converts through raw bin yields.
 
 ## 5. Operations on histograms
 
-    h_r   = ab.rebin(h, factor=2)
+    h_r   = ab.rebin(h, factor=2)        # factor must divide the bin count
     h_n   = ab.normalize(h, to=1.0)
     r, e  = ab.ratio(h_num, h_den)       # → combined numerator/denominator error
     # Edges must match (roundoff only); zero-denominator bins are NaN by default.
@@ -160,6 +160,7 @@ ratioed together; density rebinning converts through raw bin yields.
     hs = ab.sum_histograms([h1, h2, h3])
     hs = ab.sum_histograms({"ttbar": h_tt, "Wt": h_wt})
     hs = h1 + h2 + h3
+    # Counts, underflow and overflow add; errors = sqrt(Σ errors²)
 
     h2_sum = ab.sum_histograms2d([h2a, h2b, h2c])
     h2_sum = ab.sum_histograms2d({"chunk0": h2a, "chunk1": h2b})

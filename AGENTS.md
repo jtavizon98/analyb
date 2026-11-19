@@ -31,6 +31,9 @@ without producing an immediate error.
   solely by the absolute coordinate magnitude. `rebin_root_histogram` and
   `rebin_to_edges` share `histogram._aligned_edge_indices`; ROOT validation,
   flow handling and aggregation stay in `comparison.py`.
+- `rebin` requires a factor that divides the bins on every axis; never drop a
+  trailing partial group. `sum_histograms` adds underflow and overflow.
+  `tests/test_histogram_properties.py` states these conservation laws.
 - `rebin_to_edges` merges whole aligned bins only and keeps the source range;
   `hist1d_with_ratio` and `hist1d_stacked` require shared edges. Never
   redistribute counts by bin-overlap fraction.

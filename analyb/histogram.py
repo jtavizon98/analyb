@@ -36,6 +36,8 @@ class Hist1D:
                 )
             errors = np.sqrt(self.counts)
         self.errors = np.asarray(errors, dtype=np.float64)
+        if self.errors.shape != self.counts.shape:
+            raise ValueError("Hist1D errors must have the same shape as counts")
         self.label = label
         self.unit = unit
         self.overflow = float(overflow)
@@ -124,6 +126,8 @@ class Hist2D:
         if errors is None:
             errors = np.sqrt(self.counts)
         self.errors = np.asarray(errors, dtype=np.float64)
+        if self.errors.shape != self.counts.shape:
+            raise ValueError("Hist2D errors must have the same shape as counts")
         self.x_label = x_label
         self.y_label = y_label
         self.x_unit = x_unit
@@ -325,68 +329,57 @@ def hist2d(
 # Operations
 # --------------------------------------------------------------------------
 
+def _check_rebin_factor(factor, nbins, axis="", hint=True):
+    if (isinstance(factor, (bool, np.bool_)) or not isinstance(factor, (int, np.integer))
+            or factor < 1):
+        raise ValueError("rebin factor must be a positive integer")
+    if nbins % factor:
+        raise ValueError(
+            f"rebin factor {factor} must exactly divide the {nbins} {axis}bins"
+            + ("; use rebin_to_edges() for an explicit trailing bin" if hint else "")
+        )
+
+
 def rebin(hist, factor=2):
-    """Merge `factor` adjacent bins. Returns a new Hist1D/Hist2D."""
+    """Merge `factor` adjacent bins. Returns a new Hist1D/Hist2D.
+
+    The factor must divide the number of bins on each axis, so the summed
+    counts, stored variances and flows are preserved up to roundoff; a
+    trailing partial group is never dropped. Density histograms are merged
+    through raw bin yields. Merged variances add the stored per-bin
+    variances, which assumes bins are uncorrelated.
+    """
     if isinstance(hist, Hist2D):
-        if isinstance(factor, (list, tuple)):
-            fx, fy = factor
-        else:
-            fx = fy = factor
+        fx, fy = factor if isinstance(factor, (list, tuple)) else (factor, factor)
         n, m = hist.counts.shape
-        n2, m2 = (n // fx) * fx, (m // fy) * fy
-        counts = hist.counts[:n2, :m2].reshape(n2 // fx, fx, m2 // fy, fy).sum(axis=(1, 3))
-        err2 = hist.errors[:n2, :m2] ** 2
-        err2_merged = err2.reshape(n2 // fx, fx, m2 // fy, fy).sum(axis=(1, 3))
+        _check_rebin_factor(fx, n, "x ", hint=False)
+        _check_rebin_factor(fy, m, "y ", hint=False)
+        counts = hist.counts.reshape(n // fx, fx, m // fy, fy).sum(axis=(1, 3))
+        err2 = (hist.errors ** 2).reshape(n // fx, fx, m // fy, fy).sum(axis=(1, 3))
         return Hist2D(
             counts,
-            hist.x_edges[: n2 // fx + 1],
-            hist.y_edges[: m2 // fy + 1],
-            errors=np.sqrt(err2_merged),
+            hist.x_edges[::fx],
+            hist.y_edges[::fy],
+            errors=np.sqrt(err2),
             x_label=hist.x_label, y_label=hist.y_label,
             x_unit=hist.x_unit, y_unit=hist.y_unit,
         )
-    if not isinstance(factor, (int, np.integer)) or factor < 1:
-        raise ValueError("rebin factor must be a positive integer")
-    if hist.is_density:
-        return _rebin_density(hist, factor)
-    nb = hist.nbins
-    n2 = (nb // factor) * factor
-    counts = hist.counts[:n2].reshape(n2 // factor, factor).sum(axis=1)
-    errors2 = hist.errors[:n2] ** 2
-    errors = np.sqrt(errors2.reshape(n2 // factor, factor).sum(axis=1))
-    edges = hist.edges[:n2 + 1:factor]
+    _check_rebin_factor(factor, hist.nbins)
+    widths = hist.widths if hist.is_density else 1.0
+    raw_counts = (hist.counts * widths).reshape(-1, factor).sum(axis=1)
+    raw_err2 = ((hist.errors * widths) ** 2).reshape(-1, factor).sum(axis=1)
+    edges = hist.edges[::factor]
+    new_widths = np.diff(edges) if hist.is_density else 1.0
     return Hist1D(
-        counts=counts, edges=edges, errors=errors,
-        label=hist.label, unit=hist.unit,
-        overflow=hist.overflow, underflow=hist.underflow,
-        is_weighted=hist.is_weighted,
-    )
-
-
-def _rebin_density(hist, factor):
-    """Rebin a density histogram through raw bin yields."""
-    if hist.nbins % factor:
-        raise ValueError(
-            "density rebin factor must exactly divide the number of bins; "
-            "use rebin_to_edges() for an explicit trailing bin"
-        )
-    n2 = (hist.nbins // factor) * factor
-    widths = hist.widths[:n2].reshape(n2 // factor, factor)
-    raw_counts = (hist.counts[:n2] * hist.widths[:n2]).reshape(n2 // factor, factor)
-    raw_errors2 = (hist.errors[:n2] * hist.widths[:n2]) ** 2
-    raw_errors2 = raw_errors2.reshape(n2 // factor, factor)
-    new_widths = widths.sum(axis=1)
-    edges = hist.edges[:n2 + 1:factor]
-    return Hist1D(
-        counts=raw_counts.sum(axis=1) / new_widths,
+        counts=raw_counts / new_widths,
         edges=edges,
-        errors=np.sqrt(raw_errors2.sum(axis=1)) / new_widths,
+        errors=np.sqrt(raw_err2) / new_widths,
         label=hist.label,
         unit=hist.unit,
         overflow=hist.overflow,
         underflow=hist.underflow,
         is_weighted=hist.is_weighted,
-        is_density=True,
+        is_density=hist.is_density,
     )
 
 
@@ -446,13 +439,14 @@ def ratio(num, den, nan_to=None, include_denominator_error=True):
 def sum_histograms(hists, label=None):
     """Sum a list or dict of Hist1D objects into one.
 
-    Counts are summed bin-wise; errors are propagated as
+    Counts, underflow and overflow are summed; errors are propagated as
     sqrt(sum of squares) for weighted (or Poisson) uncertainties.
 
     Parameters
     ----------
     hists : list[Hist1D] | dict[str, Hist1D]
-        Histograms to sum.  All must have identical edges.
+        Histograms to sum.  All must have the same edges up to roundoff
+        (the rule of ``ratio``); the output takes the first one's edges.
     label : str or None
         Label for the output histogram.  If None and *hists* is a dict,
         the joined keys are used.
@@ -475,15 +469,18 @@ def sum_histograms(hists, label=None):
     edges = ref.edges
     total_counts = np.zeros_like(ref.counts)
     total_err2 = np.zeros_like(ref.counts)
+    overflow = underflow = 0.0
 
     for h in values:
-        if h.edges.shape != edges.shape or not np.allclose(h.edges, edges):
+        if not _edges_match(h.edges, edges):
             raise ValueError(
                 "sum_histograms: all histograms must have identical edges"
             )
         _require_same_density(ref, h, "sum_histograms")
         total_counts += h.counts
         total_err2 += h.errors ** 2
+        overflow += h.overflow
+        underflow += h.underflow
 
     return Hist1D(
         counts=total_counts,
@@ -491,6 +488,8 @@ def sum_histograms(hists, label=None):
         errors=np.sqrt(total_err2),
         label=label,
         unit=ref.unit,
+        overflow=overflow,
+        underflow=underflow,
         is_weighted=True,
         is_density=ref.is_density,
     )
@@ -505,7 +504,8 @@ def sum_histograms2d(hists, x_label=None, y_label=None, x_unit=None, y_unit=None
     Parameters
     ----------
     hists : list[Hist2D] | dict[str, Hist2D]
-        Histograms to sum.  All must have identical x_edges and y_edges.
+        Histograms to sum.  All must have the same x_edges and y_edges up to
+        roundoff; the output takes the first one's edges.
     x_label, y_label : str or None
         Labels for the output.  Fall back to the first histogram's labels.
     x_unit, y_unit : str or None
@@ -525,9 +525,9 @@ def sum_histograms2d(hists, x_label=None, y_label=None, x_unit=None, y_unit=None
 
     ref = values[0]
     for h in values[1:]:
-        if (h.x_edges.shape != ref.x_edges.shape or not np.allclose(h.x_edges, ref.x_edges)):
+        if not _edges_match(h.x_edges, ref.x_edges):
             raise ValueError("sum_histograms2d: all histograms must have identical x_edges")
-        if (h.y_edges.shape != ref.y_edges.shape or not np.allclose(h.y_edges, ref.y_edges)):
+        if not _edges_match(h.y_edges, ref.y_edges):
             raise ValueError("sum_histograms2d: all histograms must have identical y_edges")
 
     total_counts = np.zeros_like(ref.counts)
@@ -589,7 +589,7 @@ def rebin_to_edges(hist, target_edges):
 
     Every target edge must be a source edge (up to roundoff) and the target
     must span exactly the source range, so counts, variances, underflow and
-    overflow are preserved exactly.  Splitting a bin, widening or narrowing
+    overflow are preserved up to roundoff.  Splitting a bin, widening or narrowing
     the range raises ``ValueError``: Hist1D flows carry no variance, so bins
     cannot be moved into them.  Density histograms are merged through raw bin
     yields.  The output adopts an exact copy of *target_edges*.
@@ -688,6 +688,8 @@ def _edges_match(first, second):
     """Whether two edge arrays describe the same bins up to roundoff."""
     if first.shape != second.shape:
         return False
+    if first.size < 2:
+        return bool(np.array_equal(first, second))
     return bool(np.all(np.abs(first - second) <= _edge_tolerance(first, np.arange(first.size))))
 
 
