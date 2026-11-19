@@ -650,7 +650,8 @@ def _outside_findings(items, axes, dpi, tol):
         else:
             continue
         owner = _owner(item)
-        mine = frames if owner is None else _frames([owner])
+        # The owner's own rectangle, drawn or not: an inset with its axis off still holds its legend and label.
+        mine = frames if owner is None else [owner.get_window_extent()]
         if any(_within(item.extent, frame, tol) for frame in mine):
             continue
         place = "any axes frame" if owner is None else "the frame of its own axes"
@@ -694,7 +695,8 @@ def _top_under(shapes, x0, x1, frame):
 
 def _log_headroom_need(ax, items):
     """(top, need_top, reason) of one log-y axes: the highest data value and the log10 top the overlays hung from the
-    top of its frame need; None for a linear, inverted or empty axis."""
+    top of its frame need (its own, its twins' with the same frame, and figure-level ones); None for a linear,
+    inverted or empty axis."""
     if ax.get_yscale() != "log":
         return None
     bottom, upper = ax.get_ylim()
@@ -715,6 +717,9 @@ def _log_headroom_need(ax, items):
     for item in items:
         if not item.overlay or item.extent.width <= 0:
             continue
+        owner = _owner(item)
+        if owner is not None and owner is not ax and owner.get_window_extent().bounds != frame.bounds:
+            continue   # another axes' legend or text (an inset's): it hangs from that axes, not from this one's top
         box = item.extent
         cx, cy = 0.5 * (box.x0 + box.x1), 0.5 * (box.y0 + box.y1)
         if not (frame.x0 <= cx <= frame.x1 and frame.y0 + 0.5 * frame.height <= cy <= frame.y1):

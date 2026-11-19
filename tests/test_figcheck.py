@@ -1064,3 +1064,31 @@ def test_legend_and_label_must_sit_in_their_own_axes():
     axes[1].get_legend().remove()
     fig.legend(loc="upper right", bbox_to_anchor=(0.95, 0.9), frameon=False)  # a figure legend may sit in any panel
     assert _layout(fig, cap=None) == []
+
+
+def test_an_inset_holds_its_own_legend_and_label_and_does_not_lower_its_parent():
+    # Council round 2: an inset with its axis off failed containment twice and gave its parent a 0.32-decade shortfall.
+    fig, axes = _pair((100.0, 10.0), sharey=False)
+    baseline = _by_check(ab.check_figure(fig, log_headroom_cap=2.5), "log-headroom")
+    inset = axes[0].inset_axes([0.2, 0.5, 0.32, 0.25])  # over the peak
+    inset.plot([0, 1], [0, 1], label="inset")
+    inset.set_axis_off()
+    inset.legend(loc="upper left", frameon=False, fontsize=5)
+    inset.text(0.05, 0.1, "ATLAS Simulation Internal", transform=inset.transAxes, fontsize=4)
+    found = _layout(fig, cap=2.5)
+    assert not any(c in ("legend-outside-axes", "label-outside-axes") for c, _ in found), found
+    assert _by_check(ab.check_figure(fig, log_headroom_cap=2.5), "log-headroom") == baseline
+
+
+def test_a_twin_axes_legend_still_needs_headroom_on_the_log_axes():
+    fig, ax = plt.subplots(figsize=(4, 3))
+    edges, y = _spectrum()
+    ax.stairs(y, edges)
+    ax.set_yscale("log")
+    ax.set_xlim(edges[0], edges[-1])
+    ax.set_ylim(0.5 * y.min(), y.max() * 1.05)
+    twin = ax.twinx()
+    twin.plot(edges, np.linspace(0, 1, len(edges)), label="efficiency")
+    twin.legend(loc="upper left", frameon=False, fontsize=14)
+    found = _by_check(ab.check_figure(fig, log_headroom_cap=2.5), "log-headroom")
+    assert any("reaches down into the data" in f.message for f in found), found
