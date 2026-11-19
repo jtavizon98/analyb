@@ -1001,3 +1001,66 @@ def test_log_headroom_ignores_boxes_in_the_lower_half():
     ax.text(0.5, 0.3, "note under the data", transform=ax.transAxes, ha="center")
     found = _by_check(ab.check_figure(fig, log_headroom_cap=2.0), "log-headroom")
     assert not any("reaches down" in f.message for f in found)
+
+
+def _pair(peaks, *, sharey=True, top=None):
+    """Two log-y panels side by side with a legend and the label at their tops; the y axis is fitted to the first."""
+    fig, axes = plt.subplots(1, 2, figsize=(7, 3), sharey=sharey, layout="none")
+    fig.subplots_adjust(left=0.1, right=0.97, bottom=0.16, top=0.95, wspace=0.08)
+    edges, y = _spectrum()
+    for ax, peak in zip(axes, peaks):
+        ax.stairs(y / y.max() * peak, edges, label="Sample")
+        ax.set_yscale("log")
+        ax.set_xlim(edges[0], edges[-1])
+        ax.set_xlabel("x [GeV]")
+        ax.text(0.04, 0.95, "ATLAS Simulation Internal", transform=ax.transAxes, va="top")
+        ax.legend(loc="upper right", frameon=False)
+    axes[0].set_ylabel("Events")
+    floor, peak = 0.5 * y.min() / y.max() * min(peaks), max(peaks)
+    if top is not None:
+        axes[0].set_ylim(floor, top)
+        return fig, axes
+    decades = 0.0
+    axes[0].set_ylim(floor, peak)
+    while not _clears(fig, axes[0], edges, y / y.max() * peaks[0]):
+        decades += 0.05
+        axes[0].set_ylim(floor, peak * 10 ** decades)
+    return fig, axes
+
+
+def test_log_headroom_measures_shared_axes_as_one_group():
+    # The lower panel shares the limits fitted to the higher one: its extra room is not excess headroom.
+    fig, _ = _pair((100.0, 10.0))
+    assert _by_check(ab.check_figure(fig, log_headroom_cap=2.5), "log-headroom") == []
+    fig, axes = _pair((100.0, 10.0))
+    axes[0].set_ylim(top=axes[0].get_ylim()[1] * 10 ** 0.8)
+    found = _by_check(ab.check_figure(fig, log_headroom_cap=2.5), "log-headroom")
+    assert [f.where for f in found] == ["axes[0] y axis (shared with axes[1])"]
+    # Unshared panels are measured each on its own limits.
+    fig, axes = _pair((100.0, 10.0), sharey=False)
+    axes[1].set_ylim(axes[0].get_ylim())
+    found = _by_check(ab.check_figure(fig, log_headroom_cap=2.5), "log-headroom")
+    assert [f.where for f in found] == ["axes[1] y axis"]
+
+
+def test_log_headroom_skips_an_inverted_axis():
+    fig, ax = plt.subplots(figsize=(4, 3))
+    ax.plot([0, 1, 2], [1.5, 1.2, 1.1])
+    ax.set_yscale("log")
+    ax.set_ylim(1e5, 1)  # inverted: the displayed top is 1, 0.18 decades above the data
+    assert _by_check(ab.check_figure(fig, log_headroom_cap=2.0), "log-headroom") == []
+
+
+def test_legend_and_label_must_sit_in_their_own_axes():
+    fig, axes = _pair((100.0, 10.0), sharey=False)
+    axes[1].get_legend().remove()
+    axes[1].texts[0].remove()
+    axes[0].legend(loc="upper right", bbox_to_anchor=(2.0, 1.0), frameon=False)  # drawn inside the right panel
+    axes[0].texts[0].set_position((1.15, 0.95))
+    found = _layout(fig, cap=None)
+    assert ("legend-outside-axes", "axes[0] legend") in found
+    assert any(c == "label-outside-axes" for c, _ in found)
+    fig, axes = _pair((100.0, 10.0), sharey=False)
+    axes[1].get_legend().remove()
+    fig.legend(loc="upper right", bbox_to_anchor=(0.95, 0.9), frameon=False)  # a figure legend may sit in any panel
+    assert _layout(fig, cap=None) == []

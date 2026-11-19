@@ -631,8 +631,14 @@ def _within(box, frame, tol):
             and box.y0 >= frame.y0 - tol and box.y1 <= frame.y1 + tol)
 
 
+def _owner(item):
+    """Axes a legend or text belongs to; None for figure-level ones (fig.legend, fig.text)."""
+    artist = item.legend if item.legend is not None else item.text
+    return getattr(artist, "axes", None)
+
+
 def _outside_findings(items, axes, dpi, tol):
-    """Legends and experiment labels whose box lies inside no axes frame."""
+    """Legends and experiment labels outside their own axes frame (any frame for figure-level ones)."""
     frames = _frames(axes)
     pattern = re.compile(LABEL_PATTERN)
     found = []
@@ -643,11 +649,14 @@ def _outside_findings(items, axes, dpi, tol):
             check, what = "label-outside-axes", f"label '{_snippet(item.text.get_text())}'"
         else:
             continue
-        if any(_within(item.extent, frame, tol) for frame in frames):
+        owner = _owner(item)
+        mine = frames if owner is None else _frames([owner])
+        if any(_within(item.extent, frame, tol) for frame in mine):
             continue
+        place = "any axes frame" if owner is None else "the frame of its own axes"
         found.append(Finding(
             check, "fail", item.where, _inches(item.extent, dpi), None,
-            f"{what} is not inside any axes frame; legends and the experiment label sit inside "
+            f"{what} is not inside {place}; legends and the experiment label sit inside "
             "the plot so a crop cannot cut them",
         ))
     return found
@@ -683,16 +692,16 @@ def _top_under(shapes, x0, x1, frame):
     return best
 
 
-def _log_headroom_findings(ax, index, items, dpi, cap):
-    """Empty decades above the data against what the panel's legends and texts need."""
+def _log_headroom_need(ax, items):
+    """(top, need_top, reason) of one log-y axes: the highest data value and the log10 top the overlays hung from the
+    top of its frame need; None for a linear, inverted or empty axis."""
     if ax.get_yscale() != "log":
-        return []
-    lo, hi = sorted(ax.get_ylim())
+        return None
+    bottom, upper = ax.get_ylim()
     v = _axis_content(ax, "y")
-    if not v.size or lo <= 0:
-        return []
-    top = float(v.max())
-    above = max(_decades(hi, top), 0.0)
+    if not v.size or bottom <= 0 or bottom > upper:
+        return None   # inverted: the displayed top is the low end, headroom above the data is not defined
+    lo, top = bottom, float(v.max())
     frame = ax.get_window_extent()
     inv = ax.transData.inverted()
     shapes = []
@@ -702,8 +711,7 @@ def _log_headroom_findings(ax, index, items, dpi, cap):
                 shapes += [("lines", poly) for poly in arr.to_polygons(closed_only=False)]
             else:
                 shapes.append((kind, np.asarray(arr)))
-    log_lo, need_top = np.log10(lo), np.log10(top)
-    reasons = []
+    log_lo, need_top, reason = np.log10(lo), np.log10(top), None
     for item in items:
         if not item.overlay or item.extent.width <= 0:
             continue
@@ -720,28 +728,51 @@ def _log_headroom_findings(ax, index, items, dpi, cap):
             continue
         needed = log_lo + (np.log10(under) - log_lo) / frac
         if needed > need_top:
-            need_top, reasons = needed, [item.where]
-    need = max(float(need_top - np.log10(top)), 0.0)
-    box = _inches(frame, dpi)
-    found = []
-    if need > above + 0.01:
-        found.append(Finding(
-            "log-headroom", "fail", f"axes[{index}] y axis", box, round(need - above, 2),
-            f"{reasons[0]} reaches down into the data: it needs {need:.2f} empty decades above the "
-            f"data and the axis leaves {above:.2f}",
-        ))
-    elif above - need > LOG_HEADROOM_SLACK:
-        found.append(Finding(
-            "log-headroom", "fail", f"axes[{index}] y axis", box, round(above - need, 2),
-            f"{above:.2f} empty decades above the data; the legends and texts need {need:.2f}"
-            f"{' (' + reasons[0] + ')' if reasons else ''}; more than {LOG_HEADROOM_SLACK:g} beyond it",
-        ))
-    if cap is not None and above > cap:
-        found.append(Finding(
-            "log-headroom", "fail", f"axes[{index}] y axis", box, round(above, 2),
-            f"{above:.2f} empty decades above the data exceed the cap of {cap:g}; shrink the legend "
-            "(shorter entries, more columns) instead of raising the axis",
-        ))
+            need_top, reason = needed, item.where
+    return top, float(need_top), reason
+
+
+def _log_headroom_findings(axes, items, dpi, cap):
+    """Empty decades above the data against what the legends and texts need, once per group of axes sharing the y
+    limits: the group's highest data and the largest need of its members (a panel below the shared maximum has more
+    room than it needs by construction)."""
+    found, seen = [], set()
+    for index, ax in enumerate(axes):
+        if not (ax.get_visible() and ax.axison) or id(ax) in seen:
+            continue
+        group = [(i, a) for i, a in enumerate(axes)
+                 if a in ax.get_shared_y_axes().get_siblings(ax) and a.get_visible() and a.axison]
+        seen.update(id(a) for _, a in group)
+        measured = [(i, m) for i, a in group if (m := _log_headroom_need(a, items)) is not None]
+        if not measured:
+            continue
+        top = max(m[0] for _, m in measured)
+        need_top, reason = max(((m[1], m[2]) for _, m in measured), key=lambda p: p[0])
+        hi = max(ax.get_ylim())
+        above = max(_decades(hi, top), 0.0)
+        need = max(need_top - float(np.log10(top)), 0.0)
+        first = measured[0][0]
+        where = f"axes[{first}] y axis" + (f" (shared with axes[{', '.join(str(i) for i, _ in measured[1:])}])"
+                                            if len(measured) > 1 else "")
+        box = _inches(axes[first].get_window_extent(), dpi)
+        if need > above + 0.01:
+            found.append(Finding(
+                "log-headroom", "fail", where, box, round(need - above, 2),
+                f"{reason} reaches down into the data: it needs {need:.2f} empty decades above the "
+                f"data and the axis leaves {above:.2f}",
+            ))
+        elif above - need > LOG_HEADROOM_SLACK:
+            found.append(Finding(
+                "log-headroom", "fail", where, box, round(above - need, 2),
+                f"{above:.2f} empty decades above the data; the legends and texts need {need:.2f}"
+                f"{' (' + reason + ')' if reason else ''}; more than {LOG_HEADROOM_SLACK:g} beyond it",
+            ))
+        if cap is not None and above > cap:
+            found.append(Finding(
+                "log-headroom", "fail", where, box, round(above, 2),
+                f"{above:.2f} empty decades above the data exceed the cap of {cap:g}; shrink the legend "
+                "(shorter entries, more columns) instead of raising the axis",
+            ))
     return found
 
 
@@ -946,8 +977,9 @@ def check_figure(fig, *, final_width_cm=None, min_font_pt=MIN_FONT_PT, flag_font
             findings += _log_range_findings(ax, index, dpi)
             findings += _marker_oversize_findings(ax, index, dpi, final_width_cm, fig.get_figwidth())
             findings += _marker_hollow_findings(ax, index, dpi)
-            if log_headroom_cap is not None:
-                findings += _log_headroom_findings(ax, index, items, dpi, log_headroom_cap)
+
+    if log_headroom_cap is not None:
+        findings += _log_headroom_findings(axes, items, dpi, log_headroom_cap)
 
     if inside_axes:
         findings += _outside_findings(items, axes, dpi, tol)

@@ -425,9 +425,9 @@ the third.
 
 | `check` | severity | `value` |
 | --- | --- | --- |
-| `legend-outside-axes`: an axes or figure legend lies inside no visible axes frame | fail | `None` |
-| `label-outside-axes`: a text starting with `ATLAS` (MathText markup ignored; `figcheck.LABEL_PATTERN`) lies inside no visible axes frame, so a crop can cut it | fail | `None` |
-| `log-headroom`: on a log y axis, the empty decades above the largest plotted value are fewer than the legends and texts in the upper half of the panel need (a box reaches into the data, filled stacks included; a box in the lower half, under the data, is left to `text-over-data`), exceed that need by more than 0.3 (`LOG_HEADROOM_SLACK`), or exceed `log_headroom_cap` | fail | shortfall, excess or headroom, decades |
+| `legend-outside-axes`: an axes legend lies outside its own axes frame, or a figure legend inside no visible axes frame | fail | `None` |
+| `label-outside-axes`: a text starting with `ATLAS` (MathText markup ignored; `figcheck.LABEL_PATTERN`) lies outside the frame of the axes it belongs to (any visible frame for `fig.text`), so a crop can cut it | fail | `None` |
+| `log-headroom`: on a log y axis, the empty decades above the largest plotted value are fewer than the legends and texts in the upper half of the panel need (a box reaches into the data, filled stacks included; a box in the lower half, under the data, is left to `text-over-data`), exceed that need by more than 0.3 (`LOG_HEADROOM_SLACK`), or exceed `log_headroom_cap`; axes sharing y limits are measured once, with the group's highest value and largest need; an inverted log axis is not checked | fail | shortfall, excess or headroom, decades |
 
 The need is the smallest axis top at which every legend or text inside the
 frame sits above the highest data under its horizontal span, each box kept at
