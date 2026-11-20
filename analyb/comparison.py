@@ -13,7 +13,7 @@ import numpy as np
 
 from . import config, makelatex
 from .colors import PALETTES, catppuccin_colorbars, catppuccin_colors, current_colorbar
-from .histogram import Hist1D, Hist2D, _aligned_edge_indices
+from .histogram import Hist1D, Hist2D, _aligned_edge_indices, divide, require_comparable
 from .io import RootHistogram
 from .plot import (
     _add_legend,
@@ -263,37 +263,7 @@ def rebin_root_histogram(source, target_edges):
 
 
 def _validate_pair(numerator, reference):
-    if type(numerator) is not type(reference):
-        raise TypeError("histogram comparison requires two histograms of the same type")
-    if isinstance(numerator, Hist1D):
-        if numerator.is_density != reference.is_density:
-            raise ValueError("comparison cannot mix raw-count and density histograms")
-        edge_pairs = (("edges", numerator.edges, reference.edges),)
-    elif isinstance(numerator, Hist2D):
-        edge_pairs = (
-            ("x_edges", numerator.x_edges, reference.x_edges),
-            ("y_edges", numerator.y_edges, reference.y_edges),
-        )
-    else:
-        raise TypeError("comparison expects Hist1D or Hist2D inputs")
-    for name, first, second in edge_pairs:
-        if first.shape != second.shape or not np.array_equal(first, second):
-            raise ValueError(f"comparison requires identical {name}")
-    if isinstance(numerator, Hist2D):
-        expected_shape = (numerator.x_edges.size - 1, numerator.y_edges.size - 1)
-        if numerator.counts.shape != expected_shape:
-            raise ValueError("numerator counts must match its x/y edges")
-        if reference.counts.shape != expected_shape:
-            raise ValueError("reference counts must match its x/y edges")
-    if numerator.counts.shape != numerator.errors.shape:
-        raise ValueError("numerator errors must match its counts")
-    if reference.counts.shape != reference.errors.shape:
-        raise ValueError("reference errors must match its counts")
-    for role, histogram in (("numerator", numerator), ("reference", reference)):
-        if np.any(~np.isfinite(histogram.counts)):
-            raise ValueError(f"{role} counts must be finite")
-        if np.any(~np.isfinite(histogram.errors)) or np.any(histogram.errors < 0):
-            raise ValueError(f"{role} errors must be finite and nonnegative")
+    require_comparable(numerator, reference, edges="exact", finite=True)
 
 
 def _yield_and_error(histogram):
@@ -362,29 +332,11 @@ def compare_histograms(numerator, reference, *, shape=True):
     numerator_yield, numerator_yield_error = _yield_and_error(numerator)
     reference_yield, reference_yield_error = _yield_and_error(reference)
 
-    if reference_yield == 0 or not np.isfinite(reference_yield):
-        yield_ratio = yield_ratio_error = np.nan
-    else:
-        yield_ratio = numerator_yield / reference_yield
-        yield_ratio_error = np.hypot(
-            numerator_yield_error / abs(reference_yield),
-            abs(numerator_yield) * reference_yield_error / reference_yield ** 2,
-        )
-
-    ratio_valid = (
-        np.isfinite(numerator.counts) & np.isfinite(reference.counts)
-        & np.isfinite(numerator.errors) & np.isfinite(reference.errors)
-        & (reference.counts != 0)
-    )
-    ratio = np.full(numerator.counts.shape, np.nan, dtype=np.float64)
-    ratio_error = np.full(numerator.counts.shape, np.nan, dtype=np.float64)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        ratio[ratio_valid] = numerator.counts[ratio_valid] / reference.counts[ratio_valid]
-        ratio_error[ratio_valid] = np.hypot(
-            numerator.errors[ratio_valid] / np.abs(reference.counts[ratio_valid]),
-            np.abs(numerator.counts[ratio_valid]) * reference.errors[ratio_valid]
-            / reference.counts[ratio_valid] ** 2,
-        )
+    yield_ratio, yield_ratio_error, _ = divide(
+        numerator_yield, numerator_yield_error, reference_yield, reference_yield_error)
+    yield_ratio, yield_ratio_error = float(yield_ratio), float(yield_ratio_error)
+    ratio, ratio_error, ratio_valid = divide(
+        numerator.counts, numerator.errors, reference.counts, reference.errors)
 
     difference = numerator.counts - reference.counts
     difference_error = np.hypot(numerator.errors, reference.errors)
@@ -579,16 +531,10 @@ def artifact_comparison_1d(
             numerator.bin_width, unit=unit, is_density=numerator.is_density, weighted=weighted,
         )
     if shape:
-        ratio = np.full(numerator.counts.shape, np.nan, dtype=np.float64)
-        ratio_error = np.full(numerator.counts.shape, np.nan, dtype=np.float64)
-        finite = diagnostics.ratio_valid & (reference_values != 0)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            ratio[finite] = numerator_values[finite] / reference_values[finite]
-            ratio_error[finite] = np.hypot(
-                numerator_errors[finite] / np.abs(reference_values[finite]),
-                np.abs(numerator_values[finite]) * reference_errors[finite]
-                / reference_values[finite] ** 2,
-            )
+        # Per-bin independent errors of the unit-area histograms, as drawn;
+        # the shape chi-square in ``diagnostics`` keeps the normalization covariance.
+        ratio, ratio_error, _ = divide(
+            numerator_values, numerator_errors, reference_values, reference_errors)
     else:
         ratio = diagnostics.ratio
         ratio_error = diagnostics.ratio_error
@@ -675,14 +621,8 @@ def artifact_comparison_1d(
             unity = np.where(np.isfinite(ratio), 1.0, np.nan)
             _data_errorbar(ax_ratio, centers, unity, yerr=unity_errors, color=point_color)
     elif separate_ratio_errors:
-        valid = (diagnostics.ratio_valid & np.isfinite(reference_values)
-                 & np.isfinite(reference_errors) & (reference_values != 0))
-        numerator_error = np.full_like(ratio, np.nan)
-        reference_error = np.full_like(ratio, np.nan)
-        unity = np.full_like(ratio, np.nan)
-        numerator_error[valid] = numerator_errors[valid] / np.abs(reference_values[valid])
-        reference_error[valid] = reference_errors[valid] / np.abs(reference_values[valid])
-        unity[valid] = 1.0
+        numerator_error = divide(numerator_values, numerator_errors, reference_values).error
+        unity, reference_error, _ = divide(reference_values, reference_errors, reference_values)
         ax_ratio.stairs(ratio, numerator.edges, color=model_color, linewidth=1.2, baseline=None)
         lower, upper = ratio - numerator_error, ratio + numerator_error
         ax_ratio.fill_between(numerator.edges, np.r_[lower, lower[-1]],
@@ -913,15 +853,14 @@ def artifact_comparison_many_1d(numerators, reference, *, colors=None,
     for name, hist in numerators.items():
         if not isinstance(hist, Hist1D):
             raise TypeError(f"numerator {name!r} must be Hist1D")
-        if hist.is_density != reference.is_density or not np.array_equal(hist.edges, reference.edges):
-            raise ValueError(f"numerator {name!r} must match reference edges and density state")
+        require_comparable(reference, hist, edges="exact", operation=f"numerator {name!r}")
         if ylog and np.any(hist.counts < 0):
             raise ValueError("logarithmic comparison cannot display negative bins")
     if reference_variation is not None:
-        if (not isinstance(reference_variation, Hist1D) or
-                reference_variation.is_density != reference.is_density or
-                not np.array_equal(reference_variation.edges, reference.edges)):
-            raise ValueError("reference variation must share the raw reference grid")
+        if not isinstance(reference_variation, Hist1D):
+            raise TypeError("reference variation must be Hist1D")
+        require_comparable(reference, reference_variation, edges="exact",
+                           operation="reference variation")
         if not is_color_like(variation_color):
             raise ValueError("reference variation needs a valid colour")
     fig, axes, diagnostics = artifact_comparison_1d(
@@ -947,12 +886,7 @@ def artifact_comparison_many_1d(numerators, reference, *, colors=None,
         values = result.normalized_numerator if shape else hist.counts
         errors = result.normalized_numerator_error if shape else hist.errors
         ref = result.normalized_reference if shape else reference.counts
-        valid = (np.isfinite(values) & np.isfinite(errors) & np.isfinite(ref)
-                 & (ref != 0))
-        ratio = np.full_like(values, np.nan)
-        ratio_error = np.full_like(values, np.nan)
-        ratio[valid] = values[valid] / ref[valid]
-        ratio_error[valid] = errors[valid] / np.abs(ref[valid])
+        ratio, ratio_error, _ = divide(values, errors, ref)
         main_values = values / hist.widths if density else values
         main_errors = errors / hist.widths if density else errors
         ax_main.stairs(main_values, hist.edges, color=color, linewidth=1.0, label=name)
@@ -980,9 +914,7 @@ def artifact_comparison_many_1d(numerators, reference, *, colors=None,
         values = (comparison.normalized_numerator if shape else reference_variation.counts)
         errors = (comparison.normalized_numerator_error if shape else reference_variation.errors)
         denominator = (comparison.normalized_reference if shape else reference.counts)
-        valid = np.isfinite(values) & np.isfinite(denominator) & (denominator != 0)
-        variation_ratio = np.full_like(values, np.nan)
-        variation_ratio[valid] = values[valid] / denominator[valid]
+        variation_ratio, _, valid = divide(values, None, denominator)
         ratio_errors = _reference_ratio_errors(variation_ratio_errors, valid)
         ax_main.errorbar(reference.centers, values/reference.widths if density else values,
                          yerr=errors/reference.widths if density else errors,
@@ -1056,10 +988,11 @@ def artifact_comparison_flavours_1d(sources, references, *, colors,
         raise ValueError("reference flavour ratios require a shared reference")
     if reference_ratio_errors is not None and set(reference_ratio_errors) != set(flavours[1:]):
         raise ValueError("reference ratio errors must cover non-baseline flavours")
-    for hist in [*references.values(), *(h for series in sources.values() for h in series.values())]:
-        if (not isinstance(hist, Hist1D) or hist.is_density or
-                not np.array_equal(hist.edges, baseline.edges)):
-            raise ValueError("flavour comparisons require matching raw Hist1D grids")
+    if not isinstance(baseline, Hist1D) or baseline.is_density:
+        raise ValueError("flavour comparisons require raw Hist1D inputs")
+    require_comparable(baseline, *references.values(),
+                       *(h for series in sources.values() for h in series.values()),
+                       edges="exact", operation="flavour comparison")
     names = list(sources)
     first = {name: series[flavours[0]] for name, series in sources.items()}
     fig, (main, ratio_ax), first_diag = artifact_comparison_many_1d(
@@ -1091,18 +1024,16 @@ def artifact_comparison_flavours_1d(sources, references, *, colors,
         if show_reference_ratios:
             ref_ratio = compare_histograms(reference, baseline, shape=shape)
             denominator = ref_ratio.normalized_reference if shape else baseline.counts
-            valid_ref = np.isfinite(ref_values) & np.isfinite(denominator) & (denominator != 0)
-            values = np.full_like(ref_values, np.nan)
-            values[valid_ref] = ref_values[valid_ref] / denominator[valid_ref]
+            values, _, valid_ref = divide(ref_values, None, denominator)
             errors = _reference_ratio_errors(
                 None if reference_ratio_errors is None else reference_ratio_errors[flavour],
                 valid_ref)
             _reference_ratio_errorbar(ratio_ax, x, values, errors, valid_ref,
                                       colors[reference_label][flavour])
         elif ratio_reference_flavour is None:
-            valid_ref = np.isfinite(ref_values) & (ref_values != 0)
-            ratio_ax.errorbar(x[valid_ref], np.ones(np.count_nonzero(valid_ref)),
-                              yerr=ref_errors[valid_ref] / np.abs(ref_values[valid_ref]),
+            unity, unity_error, valid_ref = divide(ref_values, ref_errors, ref_values)
+            ratio_ax.errorbar(x[valid_ref], unity[valid_ref],
+                              yerr=unity_error[valid_ref],
                               fmt="o", ms=4, color=colors[reference_label][flavour],
                               markerfacecolor=colors[reference_label][flavour],
                               markeredgecolor=colors[reference_label][flavour],
@@ -1128,11 +1059,7 @@ def artifact_comparison_flavours_1d(sources, references, *, colors,
                               step="post", color=color, alpha=0.08, linewidth=0)
             ref_ratio = (result.normalized_reference if shape else
                          (baseline if ratio_reference_flavour is not None else reference).counts)
-            valid = np.isfinite(values) & np.isfinite(errors) & np.isfinite(ref_ratio) & (ref_ratio != 0)
-            ratio = np.full_like(values, np.nan)
-            error = np.full_like(values, np.nan)
-            ratio[valid] = values[valid] / ref_ratio[valid]
-            error[valid] = errors[valid] / np.abs(ref_ratio[valid])
+            ratio, error, _ = divide(values, errors, ref_ratio)
             ratio_ax.stairs(ratio, hist.edges, color=color, linestyle="-",
                              linewidth=1.05, baseline=None)
             ratio_ax.fill_between(hist.edges, np.r_[ratio-error, (ratio-error)[-1]],
@@ -1371,28 +1298,8 @@ def artifact_closure_1d(
         raise TypeError("artifact_closure_1d expects a Hist1D baseline")
     if not isinstance(components, Mapping) or not components:
         raise ValueError("components must be a non-empty ordered mapping")
-    if baseline.errors.shape != baseline.counts.shape:
-        raise ValueError("baseline errors must match counts")
-    if (np.any(~np.isfinite(baseline.counts)) or np.any(~np.isfinite(baseline.errors))
-            or np.any(baseline.errors < 0)):
-        raise ValueError("baseline counts must be finite with finite nonnegative errors")
-    for name, component in components.items():
-        if not isinstance(component, Hist1D):
-            raise TypeError("closure components must be Hist1D objects")
-        if component.is_density != baseline.is_density:
-            raise ValueError("closure cannot mix raw-count and density histograms")
-        if component.counts.shape != baseline.counts.shape:
-            raise ValueError("closure components must match the baseline bin count")
-        if not np.array_equal(component.edges, baseline.edges):
-            raise ValueError("closure components must share the baseline edges")
-        if component.errors.shape != component.counts.shape:
-            raise ValueError("component errors must match counts")
-        if (np.any(~np.isfinite(component.counts))
-                or np.any(~np.isfinite(component.errors))
-                or np.any(component.errors < 0)):
-            raise ValueError(
-                "component counts must be finite with finite nonnegative errors"
-            )
+    require_comparable(baseline, *components.values(), edges="exact", finite=True,
+                       operation="closure")
 
     values = np.asarray(residual_values, dtype=np.float64)
     errors = np.asarray(residual_errors, dtype=np.float64)

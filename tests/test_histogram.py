@@ -97,7 +97,7 @@ def test_density_operations_are_safe():
         ab.sum_histograms([raw, density])
     with np.testing.assert_raises_regex(ValueError, "raw-count and per-bin-width"):
         ab.ratio(raw, density)
-    with np.testing.assert_raises_regex(ValueError, "raw-count and density"):
+    with np.testing.assert_raises_regex(ValueError, "raw-count and per-bin-width density"):
         ab.hist1d_stacked({"raw": raw, "density": density})
 
     rebinned = ab.rebin(density, factor=2)
@@ -149,7 +149,7 @@ def test_ratio_requires_matching_edges():
 
     for edges in ([0.0, 1.1, 2.0], [0.0, 1.0, 2.0, 3.0]):
         den = ab.Hist1D(np.ones(len(edges) - 1), edges)
-        with np.testing.assert_raises_regex(ValueError, "bin edges differ"):
+        with np.testing.assert_raises_regex(ValueError, "identical edges"):
             ab.ratio(num, den)
 
 
@@ -210,11 +210,11 @@ def test_rebin_to_edges_rejects_split_bins_and_range_changes():
 def test_data_mc_plots_reject_misaligned_bins():
     mc = ab.Hist1D([4.0, 4.0], [0.0, 1.0, 2.0], errors=[1.0, 1.0])
     other = ab.Hist1D([4.0, 4.0], [0.0, 1.5, 2.0], errors=[1.0, 1.0])
-    with np.testing.assert_raises_regex(ValueError, "identical bin edges"):
+    with np.testing.assert_raises_regex(ValueError, "identical edges"):
         ab.hist1d_with_ratio(other, mc)
-    with np.testing.assert_raises_regex(ValueError, "identical bin edges"):
+    with np.testing.assert_raises_regex(ValueError, "identical edges"):
         ab.hist1d_stacked({"MC": mc}, data_hist=other)
-    with np.testing.assert_raises_regex(ValueError, "identical bin edges"):
+    with np.testing.assert_raises_regex(ValueError, "identical edges"):
         ab.hist1d_stacked({"a": mc, "b": other})
 
 

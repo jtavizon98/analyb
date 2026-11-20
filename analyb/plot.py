@@ -40,7 +40,7 @@ from .histogram import (
     Hist1D, Hist2D,
     ratio as hist_ratio,
     normalize as hist_normalize,
-    _edges_match,
+    require_comparable,
 )
 from .units import format_bin_width
 
@@ -598,15 +598,6 @@ def _ratio_axes(figsize):
     )
 
 
-def _require_shared_edges(reference, others, operation):
-    """Reject histograms whose bins differ; plots never redistribute counts."""
-    if any(not _edges_match(reference.edges, other.edges) for other in others):
-        raise ValueError(
-            f"{operation} requires identical bin edges; merge aligned bins "
-            "with rebin_to_edges() before plotting"
-        )
-
-
 def _draw_ratio_panel(
     ax, data_hist, mc_hist, *, color, mc_color, xlabel, label, band_alpha=0.25,
 ):
@@ -661,7 +652,8 @@ def hist1d_with_ratio(
     if mc_color is None:
         mc_color = catppuccin_colors["red"]
 
-    _require_shared_edges(mc_hist, [data_hist], "hist1d_with_ratio")
+    # Plots never redistribute counts: merge aligned bins with rebin_to_edges().
+    require_comparable(mc_hist, data_hist, edges="roundoff", operation="hist1d_with_ratio")
 
     fig, (ax_main, ax_ratio) = _ratio_axes(figsize)
 
@@ -735,12 +727,9 @@ def hist1d_stacked(
     hists = list(samples.values())
     if not hists:
         raise ValueError("hist1d_stacked requires at least one histogram")
-    if any(h.is_density != hists[0].is_density for h in hists[1:]):
-        raise ValueError("hist1d_stacked cannot mix raw-count and density histograms")
-    if data_hist is not None and data_hist.is_density != hists[0].is_density:
-        raise ValueError("hist1d_stacked cannot mix raw-count and density histograms")
-    _require_shared_edges(
-        hists[0], hists[1:] + ([] if data_hist is None else [data_hist]), "hist1d_stacked",
+    require_comparable(
+        hists[0], *hists[1:], *([] if data_hist is None else [data_hist]),
+        edges="roundoff", operation="hist1d_stacked",
     )
     if normalize:
         hists = [hist_normalize(h) for h in hists]

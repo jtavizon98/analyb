@@ -240,6 +240,7 @@ def cutflow_comparison(stages, numerator, reference, *, numerator_errors=None,
     masked. Reference errors and numerator-only ratio errors are drawn separately.
     """
     from .colors import catppuccin_colors
+    from .histogram import divide
     from .plot import _data_errorbar, add_atlas_label
     a, b = np.asarray(numerator, float), np.asarray(reference, float)
     if a.shape != b.shape or a.shape != (len(stages),):
@@ -271,14 +272,12 @@ def cutflow_comparison(stages, numerator, reference, *, numerator_errors=None,
     main.set_ylim(low,high*1.45 if high>0 else 1.)
     main.legend(loc='upper right',fontsize='small')
     add_atlas_label(main,status='Internal',lumi=False)
-    valid=b!=0;ratio=np.full_like(a,np.nan);ratio[valid]=a[valid]/b[valid]
+    ratio,err,_=divide(a,ae,b)
     ratio_ax.stairs(ratio,edges,color=red,linewidth=1.2)
     if ae is not None:
-        err=np.full_like(a,np.nan);err[valid]=ae[valid]/abs(b[valid])
         lo,hi=ratio-err,ratio+err
         ratio_ax.fill_between(edges,np.r_[lo,lo[-1]],np.r_[hi,hi[-1]],step='post',color=red,alpha=.2)
-    unity=np.where(valid,1.,np.nan)
-    berr=None if be is None else np.divide(be,abs(b),out=np.full_like(b,np.nan),where=valid)
+    unity,berr,_=divide(b,be,b)
     _data_errorbar(ratio_ax,x,unity,yerr=berr,color='black')
     ratio_ax.axhline(1,color='black',linestyle='--',linewidth=.7)
     finite=ratio[np.isfinite(ratio)]

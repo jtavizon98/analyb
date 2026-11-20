@@ -69,7 +69,7 @@ imports, internal call structure, or other incidental implementation choices.
 | `config.py`            | Script ID, data/save paths, weight column                                                                                     |
 | `cutflow.py`           | Caller-supplied cutflow data, nested weighted efficiency variance, charting, aligned cutflow comparison                       |
 | `figcheck.py`          | Render-time figure lint: clipped, overlapping, data-covering and undersized text; optional save hook with JSON sidecar |
-| `histogram.py`         | Hist1D/Hist2D, fill, rebin, normalize, ratio, profile                                                                         |
+| `histogram.py`         | Hist1D/Hist2D, fill, rebin, normalize, profile; the one owner of grid comparability and bin-by-bin quotients          |
 | `io.py`                | TTree loading, flow-aware external TH1/TH2 loading, and typed histogram-record ROOT persistence                               |
 | `makelatex.py`         | LaTeX auto-generation for figure environments; compact plotbook with optional page map JSON                                   |
 | `parallel.py`          | Forked fill/replot workers with parent-owned typed ROOT persistence                                                            |

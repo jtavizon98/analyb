@@ -7,10 +7,13 @@ without producing an immediate error.
 - Keep raw `Hist1D` counts and per-bin-width densities distinct. Use
   `divide_by_bin_width()` for densities; never mix raw and density histograms
   in arithmetic. Explicit nonuniform edges are valid.
-- `ratio()` propagates independent numerator and denominator errors by default.
-  Disable denominator propagation only when plotting it as a separate band.
-  It requires matching edges and leaves zero-denominator bins NaN; never fill
-  them with a value that could be read as a measured ratio.
+- `require_comparable()` is the only grid check and `divide()` the only
+  bin-by-bin quotient; never re-implement either. `edges="exact"` is for
+  comparisons of external artifacts, `edges="roundoff"` for arithmetic inside
+  analyb. `divide()` propagates independent numerator and denominator errors,
+  or numerator-only errors when the denominator is drawn as a separate band,
+  and leaves bins with a zero denominator or a non-finite input NaN; never
+  fill them with a value that could be read as a measured ratio.
 - Variable labels and units belong to the caller. Keep the default registry
   empty; unknown names fall back to `(name, None)` unless strict lookup is used.
 - Direct ROOT and histogram-cache serialization must preserve weighted

@@ -595,9 +595,9 @@ def test_artifact_closure_1d_rejects_invalid_inputs():
     with pytest.raises(TypeError, match="Hist1D baseline"):
         ab.artifact_closure_1d("baseline", components, **valid_residual)
     mismatched = ab.Hist1D([1.0, 1.0, 1.0], [0.0, 1.0, 3.0, 4.0], errors=[0.1, 0.1, 0.1])
-    with pytest.raises(ValueError, match="share the baseline edges"):
+    with pytest.raises(ValueError, match="identical edges"):
         ab.artifact_closure_1d(baseline, {"Other": mismatched}, **valid_residual)
-    with pytest.raises(ValueError, match="raw-count and density"):
+    with pytest.raises(ValueError, match="raw-count and per-bin-width density"):
         ab.artifact_closure_1d(
             ab.divide_by_bin_width(baseline), components, **valid_residual,
         )

@@ -47,7 +47,7 @@ from .io import (
 )
 from .histogram import (
     Hist1D, Hist2D,
-    hist1d, hist2d, rebin, normalize, ratio,
+    hist1d, hist2d, rebin, normalize, ratio, divide, Quotient, require_comparable,
     sum_histograms, sum_histograms2d,
     profile, efficiency, rebin_to_edges,
     profile_sufficient_statistics, profile_from_sufficient_statistics,
@@ -110,6 +110,7 @@ __all__ = [
     "Hist1DRecord", "Hist2DRecord", "ProfileRecord", "CompareRecord",
     "hist1d_record", "hist2d_record",
     "Hist1D", "Hist2D", "hist1d", "hist2d", "rebin", "normalize", "ratio",
+    "divide", "Quotient", "require_comparable",
     "sum_histograms", "sum_histograms2d",
     "rebin_to_edges", "profile", "efficiency", "scale_to_luminosity", "divide_by_bin_width",
     "HistogramComparison", "compare_histograms", "rebin_root_histogram",

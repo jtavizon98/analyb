@@ -155,6 +155,14 @@ ratioed together; density rebinning converts through raw bin yields.
     r, e  = ab.ratio(h_num, h_den, include_denominator_error=False)
     # Use numerator-only point errors when the denominator uncertainty is a separate band.
 
+    q = ab.divide(n, n_err, d, d_err)    # arrays: Quotient(value, error, valid)
+    q = ab.divide(n, n_err, d)           # numerator-only error sigma_n / |d|
+    # Undefined bins (d == 0 or any non-finite input) are NaN in value and error.
+    ab.require_comparable(h_a, h_b, edges="exact")     # external artifacts
+    ab.require_comparable(h_a, h_b, edges="roundoff")  # arithmetic inside analyb
+    # Same type, density state and grid; finite=True also requires finite
+    # counts and finite nonnegative errors. Every analyb ratio and sum uses these.
+
 ### Sum multiple histograms (2D)
 
     hs = ab.sum_histograms([h1, h2, h3])

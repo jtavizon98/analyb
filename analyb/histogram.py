@@ -1,5 +1,7 @@
 """Histogram filling (numpy/scipy based) and Hist1D/Hist2D classes."""
 
+from typing import NamedTuple, Optional
+
 import numpy as np
 from scipy import stats
 
@@ -408,27 +410,15 @@ def ratio(num, den, nan_to=None, include_denominator_error=True):
     By default, independent numerator and denominator uncertainties are
     combined.  Set ``include_denominator_error=False`` when the denominator
     uncertainty is displayed separately (for example, as an MC ratio band).
-    Bins with a zero denominator are undefined: value and error are NaN unless
-    ``nan_to`` names an explicit fill value.  Both histograms must share their
-    bin edges up to floating-point roundoff.
+    Bins where ``divide`` is undefined (zero denominator or a non-finite
+    input) are NaN unless ``nan_to`` names an explicit fill value.  Both
+    histograms must share their bin edges up to floating-point roundoff.
     """
     num = num if isinstance(num, Hist1D) else Hist1D(num, np.arange(len(num) + 1))
     den = den if isinstance(den, Hist1D) else Hist1D(den, np.arange(len(den) + 1))
-    _require_same_density(num, den, "ratio")
-    if not _edges_match(num.edges, den.edges):
-        raise ValueError("ratio: numerator and denominator bin edges differ")
-    valid_den = den.counts != 0
-    with np.errstate(divide="ignore", invalid="ignore"):
-        r = np.where(valid_den, num.counts / den.counts, np.nan)
-        # Propagate directly rather than through relative errors.  This keeps
-        # a zero numerator finite: sigma(num / den) = sigma_num / |den|.
-        num_term = num.errors / np.abs(den.counts)
-        if include_denominator_error:
-            den_term = np.abs(num.counts) * den.errors / den.counts ** 2
-            r_err = np.hypot(num_term, den_term)
-        else:
-            r_err = num_term
-        r_err = np.where(valid_den, r_err, np.nan)
+    require_comparable(num, den, edges="roundoff", operation="ratio")
+    r, r_err, _ = divide(num.counts, num.errors, den.counts,
+                         den.errors if include_denominator_error else None)
     if nan_to is not None:
         nan_mask = ~np.isfinite(r)
         r = np.where(nan_mask, nan_to, r)
@@ -471,12 +461,8 @@ def sum_histograms(hists, label=None):
     total_err2 = np.zeros_like(ref.counts)
     overflow = underflow = 0.0
 
+    require_comparable(ref, *values[1:], edges="roundoff", operation="sum_histograms")
     for h in values:
-        if not _edges_match(h.edges, edges):
-            raise ValueError(
-                "sum_histograms: all histograms must have identical edges"
-            )
-        _require_same_density(ref, h, "sum_histograms")
         total_counts += h.counts
         total_err2 += h.errors ** 2
         overflow += h.overflow
@@ -496,7 +482,7 @@ def sum_histograms(hists, label=None):
 
 
 def sum_histograms2d(hists, x_label=None, y_label=None, x_unit=None, y_unit=None):
-    """Sum a list or dict of Hist2D objects with exact matching edges.
+    """Sum a list or dict of Hist2D objects on one grid (roundoff edge rule).
 
     Counts are summed bin-wise; errors are propagated as
     sqrt(sum of squares).
@@ -524,11 +510,7 @@ def sum_histograms2d(hists, x_label=None, y_label=None, x_unit=None, y_unit=None
         raise ValueError("sum_histograms2d: need at least one histogram")
 
     ref = values[0]
-    for h in values[1:]:
-        if not _edges_match(h.x_edges, ref.x_edges):
-            raise ValueError("sum_histograms2d: all histograms must have identical x_edges")
-        if not _edges_match(h.y_edges, ref.y_edges):
-            raise ValueError("sum_histograms2d: all histograms must have identical y_edges")
+    require_comparable(ref, *values[1:], edges="roundoff", operation="sum_histograms2d")
 
     total_counts = np.zeros_like(ref.counts)
     total_err2 = np.zeros_like(ref.counts)
@@ -691,6 +673,104 @@ def _edges_match(first, second):
     if first.size < 2:
         return bool(np.array_equal(first, second))
     return bool(np.all(np.abs(first - second) <= _edge_tolerance(first, np.arange(first.size))))
+
+
+# --------------------------------------------------------------------------
+# Comparability and bin-by-bin quotients: the one owner of both rules
+# --------------------------------------------------------------------------
+
+EDGE_RULES = ("exact", "roundoff")
+
+
+def require_comparable(first, *others, edges, finite=False, operation="comparison"):
+    """Raise unless ``others`` can be combined bin by bin with ``first``.
+
+    All inputs must be the same histogram type (Hist1D or Hist2D), share the
+    raw-count or density state, and share every axis grid under ``edges``:
+
+    - ``"exact"``: identical edge values. Comparisons of external artifacts
+      use this, so a regenerated axis cannot pass as the reference grid.
+    - ``"roundoff"``: equal up to ``_edge_tolerance`` (double-precision scale,
+      capped by a small fraction of the narrower neighbouring bin). Arithmetic
+      inside analyb uses this.
+
+    With ``finite=True`` the counts must also be finite and the errors finite
+    and nonnegative.
+    """
+    if edges not in EDGE_RULES:
+        raise ValueError(f"edges must be one of {EDGE_RULES}, got {edges!r}")
+    if not isinstance(first, (Hist1D, Hist2D)):
+        raise TypeError(f"{operation} expects Hist1D or Hist2D inputs")
+    match = ((lambda a, b: a.shape == b.shape and bool(np.array_equal(a, b)))
+             if edges == "exact" else _edges_match)
+    for other in others:
+        if type(other) is not type(first):
+            raise TypeError(f"{operation} requires histograms of one type")
+        if isinstance(first, Hist1D):
+            _require_same_density(first, other, operation)
+            axes = (("edges", first.edges, other.edges),)
+        else:
+            axes = (("x_edges", first.x_edges, other.x_edges),
+                    ("y_edges", first.y_edges, other.y_edges))
+        for name, a, b in axes:
+            if not match(a, b):
+                raise ValueError(f"{operation} requires identical {name} ({edges} rule)")
+    if any(hist.errors.shape != hist.counts.shape for hist in (first, *others)):
+        raise ValueError(f"{operation}: errors must match their counts")
+    if isinstance(first, Hist2D):
+        expected = (first.x_edges.size - 1, first.y_edges.size - 1)
+        if any(hist.counts.shape != expected for hist in (first, *others)):
+            raise ValueError(f"{operation}: Hist2D counts must match its x/y edges")
+    if finite:
+        for hist in (first, *others):
+            if not np.all(np.isfinite(hist.counts)):
+                raise ValueError(f"{operation}: counts must be finite")
+            if not np.all(np.isfinite(hist.errors)) or np.any(hist.errors < 0):
+                raise ValueError(f"{operation}: errors must be finite and nonnegative")
+
+
+class Quotient(NamedTuple):
+    """Bin-by-bin quotient; ``value`` and ``error`` are NaN where not ``valid``."""
+
+    value: np.ndarray
+    error: Optional[np.ndarray]
+    valid: np.ndarray
+
+
+def divide(numerator, numerator_error, denominator, denominator_error=None):
+    """``numerator / denominator`` per bin with independent-error propagation.
+
+    A bin is defined when every supplied input is finite and the denominator
+    is nonzero; elsewhere value and error are NaN, never a fill value that
+    could be read as a measurement. With ``denominator_error`` the error is
+    ``hypot(sigma_n / |d|, |n| sigma_d / d**2)``, written without relative
+    errors so a zero numerator keeps a finite error. Without it, the error is
+    the numerator-only ``sigma_n / |d|``, for plots that draw the denominator
+    uncertainty separately. ``numerator_error=None`` returns ``error=None``.
+    Inputs are arrays or scalars of one shape; nothing is assumed about
+    correlations between numerator and denominator.
+    """
+    n = np.asarray(numerator, dtype=np.float64)
+    d = np.asarray(denominator, dtype=np.float64)
+    supplied = [n, d] + [np.asarray(e, dtype=np.float64)
+                         for e in (numerator_error, denominator_error) if e is not None]
+    if any(a.shape != n.shape for a in supplied):
+        raise ValueError("divide: inputs must share one shape")
+    valid = np.logical_and.reduce([np.isfinite(a) for a in supplied]) & (d != 0)
+    value = np.full(n.shape, np.nan)
+    np.divide(n, d, out=value, where=valid)
+    error = None
+    if numerator_error is not None:
+        n_err = supplied[2]
+        error = np.full(n.shape, np.nan)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            numerator_term = n_err / np.abs(d)
+            if denominator_error is None:
+                propagated = numerator_term
+            else:
+                propagated = np.hypot(numerator_term, np.abs(n) * supplied[-1] / d ** 2)
+        error[valid] = propagated[valid]
+    return Quotient(value, error, valid)
 
 
 #--------------------------------------------------------------------------
