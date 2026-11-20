@@ -476,6 +476,25 @@ save:
     ab.set_figure_check("warn")
     ab.set_figure_layout_rules(inside_axes=True, log_headroom_cap=2.0)
 
+Fit the headroom with the check's own rule instead of computing it:
+
+    ab.fit_overlay_headroom(ax)               # after the legend and label exist
+    need = ab.overlay_need(ax)                # measure only; the axes are not changed
+
+`fit_overlay_headroom(ax, *, floor=None, cap=<layout rules>, gap=None,
+raise_floor=True, prune_ticks=True)` sets the upper y limit to what
+`overlay_need` measures plus `gap` (0.1 decades on a log axis, 0.02 axes
+fraction on a linear one), at most `cap` decades above the data (default: the
+`log_headroom_cap` of `set_figure_layout_rules`, the value the save-time check
+uses; over the cap the gap is dropped and a larger need is kept, so the check
+fails it). On a log axis it raises a floor more than 1.2 decades under the core
+to 0.3 decades under it, inside the same loop, so a floor raised later cannot
+stretch the headroom. It measures at 72 dpi (the PDF layout dpi; the figure's dpi
+is restored) and repeats until the limits stop moving, so a second call changes
+nothing: call it again after anything that moves the layout. It returns the
+final `OverlayNeed` (`scale`, `floor`, `top`, `upper`, `binding`, `core`, in data
+units), or None for an inverted axis or one without painted data.
+
 `where` names the axes index (`fig.axes` order) and the artist kind with a text
 snippet, for example `axes[1] xtick label '1000'` or `axes[0] legend`. `bbox`
 is `(x0, y0, x1, y1)` in figure inches from the canvas lower-left corner. Each

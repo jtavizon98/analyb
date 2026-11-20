@@ -42,7 +42,8 @@ floor or a 7 pt advisory size at a given final width, log axes with absurd
 empty ranges, and markers wider than their bin) as separate findings.
 Opt-in layout rules add legends and the ATLAS label outside the axes and
 log headroom that is not fitted to the legend and label
-(`set_figure_layout_rules`).
+(`set_figure_layout_rules`); `fit_overlay_headroom()` sets that headroom with
+the check's own measurement (`overlay_need()`).
 `set_figure_check("warn"|"raise")` runs it on every save and writes a
 `.figcheck.json` sidecar beside each PDF. It is off by default and never
 replaces visual review. See `CHEATSHEET.md` section 8.
@@ -69,6 +70,7 @@ imports, internal call structure, or other incidental implementation choices.
 | `config.py`            | Script ID, data/save paths, weight column                                                                                     |
 | `cutflow.py`           | Caller-supplied cutflow data, nested weighted efficiency variance, charting, aligned cutflow comparison                       |
 | `figcheck.py`          | Render-time figure lint: clipped, overlapping, data-covering and undersized text; optional save hook with JSON sidecar |
+| `headroom.py`          | Fit the upper y limit to the legends and texts hung from the top, with the figure check's measurement                       |
 | `histogram.py`         | Hist1D/Hist2D with flow bins, fill, rebin, normalize, profile; the one owner of grid comparability and bin-by-bin quotients |
 | `io.py`                | TTree loading, one TH1/TH2 loader with flows and fSumw2, native TH1D/TH2D writer                             |
 | `makelatex.py`         | LaTeX auto-generation for figure environments; compact plotbook with optional page map JSON                                   |

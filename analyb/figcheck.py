@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 
 import numpy as np
@@ -69,6 +70,9 @@ LABEL_PATTERN = r"ATLAS\b"
 """``label-outside-axes``: a text whose plain content starts with this regex is
 an experiment label."""
 LOG_HEADROOM_SLACK = 0.3
+
+# Layout dpi of the PDF backend: text extents depend on the dpi, so the overlay geometry is measured here.
+LAYOUT_DPI = 72
 """``log-headroom``: decades of empty log-y axis allowed beyond what the
 panel's legends and texts need to clear the data."""
 
@@ -462,8 +466,8 @@ def _decades(hi, lo):
     return float(np.log10(hi) - np.log10(lo))
 
 
-def _axis_content(ax, axis_name):
-    """Positive finite data values plotted along ``axis_name`` (all artists)."""
+def _axis_content(ax, axis_name, positive=True):
+    """Finite data values plotted along ``axis_name`` (all artists); only the positive ones by default (log axes)."""
     inv = ax.transData.inverted()
     limits = ax.get_ylim() if axis_name == "y" else ax.get_xlim()
     col = 1 if axis_name == "y" else 0
@@ -475,8 +479,9 @@ def _axis_content(ax, axis_name):
             if not len(pts):
                 continue
             v = inv.transform(pts)[:, col]
-            v = v[np.isfinite(v) & (v > 0)]
-            if kind == "area" and len(v) and min(limits) > 0:
+            v = v[np.isfinite(v) & (v > 0)] if positive else v[np.isfinite(v)]
+            if positive and len(v) and min(limits) > 0:   # drawn to a limit (bar baselines, fill edges, markers
+                #                                                  drawn from the floor) is not content
                 lv = np.log10(v)
                 v = v[(np.abs(lv - np.log10(min(limits))) > 1e-6)
                       & (np.abs(lv - np.log10(max(limits))) > 1e-6)]
@@ -703,17 +708,48 @@ def _top_under(shapes, x0, x1, frame):
     return best
 
 
-def _log_headroom_need(ax, items):
-    """(top, need_top, reason) of one log-y axes: the highest data value and the log10 top the overlays hung from the
-    top of its frame need (its own, its twins' with the same frame, and figure-level ones); None for a linear,
-    inverted or empty axis."""
-    if ax.get_yscale() != "log":
+@dataclass(frozen=True)
+class OverlayNeed:
+    """What the legends and texts hung from the top of one axes need along y (see :func:`overlay_need`).
+
+    All values are in data units. ``upper`` is at least ``top``; ``binding`` names the box that sets it (None when no box
+    reaches the data top). ``core`` (log axes) is the smallest plotted value at least ``LOG_CORE_FRACTION`` of ``top`` and
+    not under ``floor``; None when no such value is shown.
+    """
+    scale: str
+    floor: float
+    top: float
+    upper: float
+    binding: str = None
+    core: float = None
+
+
+@contextmanager
+def _layout_dpi(fig):
+    dpi = fig.dpi
+    fig.set_dpi(LAYOUT_DPI)
+    try:
+        yield
+    finally:
+        fig.set_dpi(dpi)
+
+
+def _overlay_need(ax, items, floor=None, pad=0.0, boxes=False):
+    """OverlayNeed of one axes from the collected ``items``; ``pad`` (axes fraction) is a gap each box keeps above the
+    data. None for an axis neither linear nor log, inverted, without painted data, or a log axis with a floor <= 0.
+    With ``boxes``, also the largest need of any box over data in data units, even under the data top (None without
+    one): the fit keeps its gap above such a box."""
+    scale = ax.get_yscale()
+    if scale not in ("log", "linear"):
         return None
+    log = scale == "log"
     bottom, upper = ax.get_ylim()
-    v = _axis_content(ax, "y")
-    if not v.size or bottom <= 0 or bottom > upper:
-        return None   # inverted: the displayed top is the low end, headroom above the data is not defined
-    lo, top = bottom, float(v.max())
+    lo = bottom if floor is None else float(floor)
+    v = _axis_content(ax, "y", positive=log)
+    if not v.size or bottom > upper or log and lo <= 0:
+        return (None, None) if boxes else None   # inverted: the displayed top is the low end, headroom above the data is not defined
+    to_scale = np.log10 if log else (lambda x: x)
+    top = float(v.max())
     frame = ax.get_window_extent()
     inv = ax.transData.inverted()
     shapes = []
@@ -723,7 +759,7 @@ def _log_headroom_need(ax, items):
                 shapes += [("lines", poly) for poly in arr.to_polygons(closed_only=False)]
             else:
                 shapes.append((kind, np.asarray(arr)))
-    log_lo, need_top, reason = np.log10(lo), np.log10(top), None
+    s_lo, need_top, reason, box_top = to_scale(lo), to_scale(top), None, None
     for item in items:
         if not item.overlay or item.extent.width <= 0:
             continue
@@ -734,17 +770,41 @@ def _log_headroom_need(ax, items):
         cx, cy = 0.5 * (box.x0 + box.x1), 0.5 * (box.y0 + box.y1)
         if not (frame.x0 <= cx <= frame.x1 and frame.y0 + 0.5 * frame.height <= cy <= frame.y1):
             continue   # outside the frame, or in its lower half: placed under or among the data, not hung from the top
-        frac = (box.y0 - frame.y0) / frame.height
+        frac = (box.y0 - frame.y0) / frame.height - pad
         y_data = _top_under(shapes, box.x0, box.x1, frame)
         if y_data is None or frac <= 0:
             continue
         under = inv.transform((cx, y_data))[1]
         if not under > lo:
             continue
-        needed = log_lo + (np.log10(under) - log_lo) / frac
+        needed = s_lo + (to_scale(under) - s_lo) / frac
+        box_top = needed if box_top is None else max(box_top, needed)
         if needed > need_top:
             need_top, reason = needed, item.where
-    return top, float(need_top), reason
+    shown = v[v >= max(LOG_CORE_FRACTION * top, lo)]   # under the floor: hidden, or a marker drawn to an earlier floor
+    core = float(shown.min()) if log and shown.size else None
+    need = OverlayNeed(scale, lo, top, float(10 ** need_top if log else need_top), reason, core)
+    if not boxes:
+        return need
+    return need, None if box_top is None else float(10 ** box_top if log else box_top)
+
+
+def overlay_need(ax, *, floor=None):
+    """Smallest upper y limit at which every legend and text hung from the top of ``ax`` clears the data under it.
+
+    The rule of the ``log-headroom`` check, measured on ``ax`` as laid out at ``LAYOUT_DPI`` (72, the PDF layout dpi;
+    the figure's dpi is restored). Boxes count when their centre lies in the upper half of the frame: the axes' own
+    legends and texts, those of its twins, and figure-level ones. Each box keeps its place in axes fraction; text placed
+    in data coordinates moves with the limits, so measure again after setting them (:func:`analyb.fit_overlay_headroom`
+    does). ``floor`` is the lower limit to compute the need at (default: the current one); the axes are not changed.
+
+    Returns an :class:`OverlayNeed` in data units, or None for an axis neither linear nor log, an inverted axis, one
+    without painted data, or a log axis whose floor is not positive.
+    """
+    fig = ax.get_figure(root=True)
+    with _layout_dpi(fig):
+        fig.draw_without_rendering()
+        return _overlay_need(ax, _collect_items(fig, _all_axes(fig)), floor)
 
 
 def _log_headroom_findings(axes, items, dpi, cap):
@@ -758,11 +818,13 @@ def _log_headroom_findings(axes, items, dpi, cap):
         group = [(i, a) for i, a in enumerate(axes)
                  if a in ax.get_shared_y_axes().get_siblings(ax) and a.get_visible() and a.axison]
         seen.update(id(a) for _, a in group)
-        measured = [(i, m) for i, a in group if (m := _log_headroom_need(a, items)) is not None]
+        measured = [(i, m) for i, a in group
+                    if (m := _overlay_need(a, items)) is not None and m.scale == "log"]
         if not measured:
             continue
-        top = max(m[0] for _, m in measured)
-        need_top, reason = max(((m[1], m[2]) for _, m in measured), key=lambda p: p[0])
+        top = max(m.top for _, m in measured)
+        binding = max((m for _, m in measured), key=lambda m: m.upper)
+        need_top, reason = float(np.log10(binding.upper)), binding.binding
         hi = max(ax.get_ylim())
         above = max(_decades(hi, top), 0.0)
         need = max(need_top - float(np.log10(top)), 0.0)

@@ -13,7 +13,7 @@ from . import style
 
 style.apply()
 
-from . import config, colors, binning, variables, io, histogram, comparison, stats, plot, cutflow, yieldtable, makelatex, units, render, provenance, figcheck, printed
+from . import config, colors, binning, variables, io, histogram, comparison, stats, plot, cutflow, yieldtable, makelatex, units, render, provenance, figcheck, headroom, printed
 
 try:
     from importlib.metadata import version as _metadata_version
@@ -79,7 +79,8 @@ from .stats import (
     gaussian, gaussian_with_constant_background,
 )
 from .colors import catppuccin_colors, catppuccin_colorbars, current_colorbar
-from .figcheck import check_figure, Finding, FigureCheckError
+from .figcheck import check_figure, overlay_need, Finding, FigureCheckError, OverlayNeed
+from .headroom import fit_overlay_headroom
 from .makelatex import write_compact_plotbook
 from .style import plotbook_context
 
@@ -87,7 +88,7 @@ __all__ = [
     "__version__",
     "config", "colors", "binning", "variables", "io", "histogram", "stats",
     "plot", "comparison", "cutflow", "yieldtable", "render",
-    "provenance", "figcheck", "printed",
+    "provenance", "figcheck", "headroom", "printed",
     "set_script_id", "get_script_id", "set_save_path", "get_save_path",
     "set_data_path", "get_data_path",
     "set_output_root", "get_output_root",
@@ -119,6 +120,7 @@ __all__ = [
     "plot_data_with_fit", "add_atlas_label", "reserve_atlas_label_headroom",
     "reserve_annotation_headroom", "artist_axes_bounds",
     "save_figure", "check_figure", "Finding", "FigureCheckError",
+    "overlay_need", "OverlayNeed", "fit_overlay_headroom",
     "CutflowData", "cutflow_chart", "cutflow_ylabel",
     "cutflow_comparison", "native_cutflow_chart", "nested_efficiency",
     "yield_table", "YieldTable", "YieldEntry",
