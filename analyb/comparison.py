@@ -20,8 +20,8 @@ from .plot import (
     _resolve_label_unit,
     _save_figure,
     _ylabel_counts,
+    _fit_top,
     add_atlas_label,
-    reserve_atlas_label_headroom,
 )
 
 
@@ -525,7 +525,6 @@ def artifact_comparison_1d(
     if atlas:
         label_kwargs = {"status": "Internal"}
         label_kwargs.update(atlas_label_kwargs or {})
-        reserve_atlas_label_headroom(ax_main, ylog=ylog)
         add_atlas_label(ax_main, **label_kwargs)
 
     split_ratio = separate_ratio_errors or ratio_presentation is not None
@@ -612,6 +611,7 @@ def artifact_comparison_1d(
     ax_ratio.set_xlabel(xlabel or "", loc="right")
     ax_ratio.set_ylabel(ratio_label, loc="top")
 
+    _fit_top(ax_main, atlas=atlas)
     if save_name is not None:
         _save_figure(
             fig, save_name, script_id=script_id, save_path=save_path,
@@ -1369,7 +1369,6 @@ def artifact_closure_1d(
     if atlas:
         label_kwargs = {"status": "Internal"}
         label_kwargs.update(atlas_label_kwargs or {})
-        reserve_atlas_label_headroom(ax_main, ylog=ylog)
         add_atlas_label(ax_main, **label_kwargs)
 
     centers = baseline.centers
@@ -1411,6 +1410,7 @@ def artifact_closure_1d(
     ax_residual.set_xlabel(xlabel or "", loc="right")
     ax_residual.set_ylabel(residual_label, loc="top")
 
+    _fit_top(ax_main, atlas=atlas)
     if save_name is not None:
         _save_figure(
             fig, save_name, script_id=script_id, save_path=save_path,

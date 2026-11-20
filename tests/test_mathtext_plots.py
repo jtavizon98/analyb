@@ -114,35 +114,6 @@ def test_atlas_label_respects_custom_fixed_position():
     plt.close(fig)
 
 
-def test_reserve_atlas_label_headroom_linear():
-    """Linear headroom reserves ~30% extra space above the data."""
-    fig, ax = plt.subplots()
-    ax.set_ylim(0, 100)
-
-    ab.reserve_atlas_label_headroom(ax, ylog=False)
-
-    ymin, ymax = ax.get_ylim()
-    assert ymin == 0.0
-    # new_ymax = 0 + (100 - 0) / 0.7 ≈ 142.9
-    assert np.isclose(ymax, 100 / 0.7)
-    plt.close(fig)
-
-
-def test_reserve_atlas_label_headroom_log():
-    """Log headroom expands by ~0.3 decades at the top."""
-    fig, ax = plt.subplots()
-    ax.set_ylim(1, 1000)
-
-    ab.reserve_atlas_label_headroom(ax, ylog=True)
-
-    ymin, ymax = ax.get_ylim()
-    assert ymin == 1.0
-    # Expanding the log range by 1 / 0.7 leaves 30% of the axes free.
-    expected = 10 ** (3 / 0.7)
-    assert np.isclose(ymax, expected, rtol=1e-3)
-    plt.close(fig)
-
-
 def test_stacked_fills_are_opaque():
     """Stacked MC fills use opaque colours matching the legend (no alpha blending)."""
     h1 = ab.hist1d(np.linspace(0, 10, 100), bins=5, range=(0, 10))

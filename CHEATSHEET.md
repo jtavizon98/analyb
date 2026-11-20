@@ -383,45 +383,22 @@ The ATLAS label is always placed at the upper-left corner of the axes
 (``x=0.04, y=0.95`` in axes coordinates, top-aligned).  1D plotting functions
 (``hist1d_plot``, ``hist1d_with_ratio``, ``hist1d_stacked``,
 ``hist1d_comparison``, ``profile_plot``, ``efficiency_plot``,
-``systematic_summary_plot``, ``plot_data_with_fit``, ``cutflow_chart``)
-automatically call ``reserve_atlas_label_headroom()`` to expand the y-axis
-limits so that roughly the top 30% of the plot area is reserved for the label.
-Legends are frameless and inset inside the upper-right corner.
+``systematic_summary_plot``, ``plot_data_with_fit``, ``cutflow_chart``,
+``artifact_comparison_1d``, ``artifact_closure_1d``, ``cutflow_comparison``)
+end with ``fit_overlay_headroom`` on the main axes, after the data, scale,
+legend, label and ratio panel: the top is the one the save-time check accepts
+(see "Figure lint"). A ``ylim`` the caller passes (``efficiency_plot``) stands
+unless a legend or label would cover data under it. Legends are frameless and
+inset inside the upper-right corner. Symlog axes keep a fixed 30 % label
+reservation until the fit measures symlog.
 
 ### Final annotation headroom (after overlays and scale)
 
-The plotting functions above already reserve label headroom before returning.
-Callers that keep drawing afterwards (extra overlays, a final explicit
-`set_ylim`, a log/symlog scale) must reserve again, because the last
-`set_ylim`/`set_yscale`/autoscale call replaces whatever was reserved:
+A caller that keeps drawing after a plotter returns (extra overlays, a new
+legend, a final `set_ylim` or scale) fits again, last:
 
-    ax.set_yscale("log")               # or "symlog", or leave linear
-    ax.set_ylim(low, high)             # caller's final bounds, after all overlays
-    ab.reserve_annotation_headroom(
-        ax,
-        (model_values, model_errors),  # one (values, errors) pair per series
-        (data_values, data_errors),
-    )
-    ab.add_atlas_label(ax, lumi=False)
+    ab.fit_overlay_headroom(ax)        # after every overlay, legend and label
 
-It expands only the upper limit so the highest finite `values + errors` point
-occupies at most `1 - fraction` of the axis, measured in axis-transform
-coordinates. The same visible `fraction` (default `0.30`) is therefore reserved
-on linear, log and symlog axes. The envelope is explicit; artists already on
-the axes are not inspected, so pass every series that must stay clear of the
-annotation region. Each `errors` array must match its `values` shape or be a
-scalar; negative finite errors are rejected. A single series is
-`reserve_annotation_headroom(ax, (values, errors))`. The return value is `True`
-when the upper limit changed and `False` when the reservation was unnecessary,
-unsupported for the current scale/limits, or not representable as a finite top
-(for example an extreme fraction on a very wide log range). On `False` the axes
-are left untouched.
-
-Limitations: it never lowers the top and never adjusts the bottom limit, so
-callers still own fitting new overlaid series; it uses the axis transform of
-the current scale, so set the final scale before calling it; it does not
-validate scientific admissibility (positive envelope or positive lower limit on
-a log axis); and it is a pure limit calculation with no collision engine.
 `artist_axes_bounds(artist, ax=None)` returns an artist's `(x0, y0, x1, y1)`
 bounding box in axes coordinates (0-1 across the axes) to check that a legend
 or label actually fits. It lays the figure out with

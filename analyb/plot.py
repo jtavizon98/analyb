@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 logger = logging.getLogger(__name__)
 
 from . import config, figcheck, variables
+from .headroom import fit_overlay_headroom
 from .colors import PALETTES, catppuccin_colors, current_colorbar
 
 
@@ -136,161 +137,25 @@ def _add_legend(ax, *args, **kwargs):
     return legend
 
 
-def reserve_atlas_label_headroom(ax, ylog=None):
-    """Expand y-axis limits to reserve ~30% headroom for the fixed ATLAS label.
+def _fit_top(ax, *, atlas, fixed=False):
+    """Last step on a plotter's main axes: fit the upper limit so the legend and label clear the data.
 
-    Called before ``add_atlas_label`` on 1D plotting axes.  2D and scatter axes
-    should not use this.
-
-    Parameters
-    ----------
-    ax : matplotlib.axes.Axes
-    ylog : bool or None
-        If True, expand log-space range.  If None, detect from ``ax.get_yscale()``.
+    Runs after everything that moves the layout (data, scale, legend, label, ratio panel), with the rule the save-time
+    ``log-headroom`` check applies (:func:`analyb.fit_overlay_headroom`). ``fixed``: the caller set the y limits, which
+    stand unless a legend or label would cover data under them.
     """
-    if ylog is None:
-        ylog = ax.get_yscale() == "log"
-    ymin, ymax = ax.get_ylim()
-    if ymax <= ymin:
-        return
     if ax.get_yscale() == "symlog":
-        transform = ax.yaxis.get_transform()
-        lower, upper = transform.transform([ymin, ymax])
-        new_ymax = transform.inverted().transform(lower + (upper - lower) / 0.7)
-        ax.set_ylim(bottom=ymin, top=float(new_ymax))
-    elif ylog and ymin > 0:
-        log_ymin = np.log10(ymin)
-        log_range = np.log10(ymax) - log_ymin
-        new_log_ymax = log_ymin + log_range / 0.7
-        ax.set_ylim(bottom=ymin, top=10 ** new_log_ymax)
-    else:
-        new_ymax = ymin + (ymax - ymin) / 0.7
-        ax.set_ylim(bottom=ymin, top=new_ymax)
-
-
-def _expand_top_to_fraction(ax, content_top, fraction):
-    """Return the y-top leaving ``fraction`` of the axis above ``content_top``.
-
-    Measured in axis-transform coordinates, so linear, log10 and symlog axes
-    reserve the same visible fraction. Returns ``None`` when the current limits,
-    the transform, or the resulting top cannot express a finite reservation; the
-    caller then leaves the axes untouched.
-    """
-    bottom, top = ax.get_ylim()
-    if not (np.isfinite(bottom) and np.isfinite(top)) or top <= bottom:
-        return None
-    transform = ax.yaxis.get_transform()
-
-    def _forward(value):
-        return np.asarray(transform.transform(value), dtype=float).reshape(-1)[0]
-
-    try:
-        lower_t = _forward(bottom)
-        upper_t = _forward(top)
-        content_t = _forward(content_top)
-    except (ValueError, OverflowError):
-        return None
-    if not np.all(np.isfinite([lower_t, upper_t, content_t])):
-        return None
-    if content_t <= lower_t or upper_t <= lower_t:
-        return None
-    if content_t <= lower_t + (1 - fraction) * (upper_t - lower_t):
-        return None
-    needed = lower_t + (content_t - lower_t) / (1 - fraction)
-    if not np.isfinite(needed):
-        return None
-    # A wide log range with a large fraction can invert to a nonfinite top;
-    # treat that as unsupported instead of passing inf to ``set_ylim``.
-    with np.errstate(over="ignore", invalid="ignore"):
-        try:
-            new_top = np.asarray(
-                transform.inverted().transform(needed), dtype=float,
-            ).reshape(-1)[0]
-        except (ValueError, OverflowError, FloatingPointError):
-            return None
-    if not np.isfinite(new_top) or new_top <= bottom:
-        return None
-    return float(new_top)
-
-
-def reserve_annotation_headroom(ax, envelope, *additional_envelopes, fraction=0.30):
-    """Reserve the top ``fraction`` of a data axis for in-axes annotations.
-
-    A companion to :func:`reserve_atlas_label_headroom` for callers that keep
-    drawing after analyb returns. It takes the plotted data/error envelope
-    explicitly instead of reading artists or the current limits, and it measures
-    in axis-transform coordinates, so linear, log and symlog axes reserve the
-    same visible fraction. Only the upper limit changes.
-
-    Call it **last**: after every overlay, after the final ``set_yscale`` and
-    ``set_ylim``, and before saving. Any later ``set_ylim``, ``set_yscale`` or
-    autoscale call replaces the reserved limits.
-
-    Parameters
-    ----------
-    ax : matplotlib.axes.Axes
-        Axis to expand.
-    envelope, *additional_envelopes : (values, errors) pairs
-        Explicit data/error envelope of each plotted series, one pair per
-        positional argument. ``values`` and ``errors`` are array-like; each
-        ``errors`` must match its ``values`` shape or be a scalar broadcast
-        over it. Negative finite errors (non-magnitudes) are rejected. Only
-        finite ``values + errors`` points set the content top. Nothing is
-        inferred from artists already on the axes.
-    fraction : float
-        Visible fraction of the axis reserved above the highest content point.
-        Default ``0.30`` matches the ATLAS label allowance. Must be in
-        ``[0, 1)``.
-
-    Returns
-    -------
-    bool
-        ``True`` when the upper limit was expanded. ``False`` when the
-        reservation was unnecessary, unsupported for the current scale/limits,
-        or not representable as a finite top; the axes are then left unchanged.
-
-    Notes
-    -----
-    The helper does not validate scientific admissibility: it does not require
-    the envelope or the lower limit to be positive on a log axis, and it never
-    adjusts the lower limit. The caller owns those checks.
-
-    Examples
-    --------
-    ::
-
-        ax.set_yscale("log")
-        ax.set_ylim(low, high)                       # caller's final bounds
-        ab.reserve_annotation_headroom(
-            ax, (model_values, model_errors), (data_values, data_errors),
-        )
-        ab.add_atlas_label(ax, lumi=False)
-    """
-    if not 0 <= fraction < 1:
-        raise ValueError("fraction must be in [0, 1)")
-    content_top = None
-    for values, errors in (envelope, *additional_envelopes):
-        values_arr = np.asarray(values, dtype=float)
-        errors_arr = np.asarray(errors, dtype=float)
-        if errors_arr.size != 1 and errors_arr.shape != values_arr.shape:
-            raise ValueError(
-                "errors must match values shape or be scalar: "
-                f"{errors_arr.shape} != {values_arr.shape}"
-            )
-        if np.any(np.isfinite(errors_arr) & (errors_arr < 0)):
-            raise ValueError("errors must be non-negative magnitudes")
-        upper = np.atleast_1d(values_arr + errors_arr)
-        upper = upper[np.isfinite(upper)]
-        if upper.size:
-            candidate = float(upper.max())
-            content_top = candidate if content_top is None else max(content_top, candidate)
-    if content_top is None:
-        return False
-    new_top = _expand_top_to_fraction(ax, content_top, fraction)
-    if new_top is None:
-        return False
-    ax.set_ylim(top=new_top)
-    return True
+        # TEMPORARY until fit_overlay_headroom measures symlog axes (analyb branch figcheck/symlog-headroom-20261120):
+        # the previous fixed reservation of 30 % of the axis for the label.
+        if atlas:
+            lower, upper = ax.yaxis.get_transform().transform(ax.get_ylim())
+            ax.set_ylim(top=float(ax.yaxis.get_transform().inverted().transform(lower + (upper - lower) / 0.7)))
+        return
+    if fixed:
+        need = figcheck.overlay_need(ax)
+        if need is None or need.upper <= ax.get_ylim()[1]:
+            return
+    fit_overlay_headroom(ax)
 
 
 def artist_axes_bounds(artist, ax=None):
@@ -577,15 +442,14 @@ def hist1d_plot(
         ax.set_title(title, loc="right")
     if ylog:
         ax.set_yscale("log")
-        bottom, top = ax.get_ylim()
-        ax.set_ylim(bottom=hist.counts[hist.counts > 0].min() * 0.3 if np.any(hist.counts > 0) else 1.0, top=top * 3)
+        ax.set_ylim(bottom=hist.counts[hist.counts > 0].min() * 0.3 if np.any(hist.counts > 0) else 1.0)
     if label is not None:
         _add_legend(ax, fontsize="x-small")
 
     if atlas:
-        reserve_atlas_label_headroom(ax, ylog=ylog)
         add_atlas_label(ax, status="Internal")
 
+    _fit_top(ax, atlas=atlas)
     if save_name is not None:
         _save_figure(fig, save_name, script_id=script_id, save_path=save_path, verbose=verbose)
     return fig, ax
@@ -685,7 +549,6 @@ def hist1d_with_ratio(
         ax_main.set_ylim(bottom=mc_pos.min() * 0.3 if mc_pos.size else 1.0)
     _add_legend(ax_main, fontsize="x-small")
     if atlas:
-        reserve_atlas_label_headroom(ax_main, ylog=ylog)
         add_atlas_label(ax_main, status="Internal")
 
     _draw_ratio_panel(
@@ -694,6 +557,7 @@ def hist1d_with_ratio(
     )
 
 
+    _fit_top(ax_main, atlas=atlas)
     if save_name is not None:
         _save_figure(fig, save_name, script_id=script_id, save_path=save_path, verbose=verbose)
     return fig, (ax_main, ax_ratio)
@@ -785,9 +649,9 @@ def hist1d_stacked(
             ax.set_yscale("log")
             ax.set_ylim(bottom=bottoms[bottoms > 0].min() * 0.3 if np.any(bottoms > 0) else 1.0)
         if atlas:
-            reserve_atlas_label_headroom(ax, ylog=ylog)
             add_atlas_label(ax, status="Internal")
 
+        _fit_top(ax, atlas=atlas)
         if save_name is not None:
             _save_figure(fig, save_name, script_id=script_id, save_path=save_path, verbose=verbose)
         return fig, ax
@@ -836,13 +700,13 @@ def hist1d_stacked(
         ax_main.set_ylim(bottom=stacked_pos.min() * 0.3 if stacked_pos.size else 1.0)
     set_yield_sorted_legend(ax_main, include_data=True)
     if atlas:
-        reserve_atlas_label_headroom(ax_main, ylog=ylog)
         add_atlas_label(ax_main, status="Internal")
     _draw_ratio_panel(
         ax_ratio, data_hist, stacked_hist, color=data_color, mc_color="black",
         xlabel=xlabel, label="Data / MC", band_alpha=0.08,
     )
 
+    _fit_top(ax_main, atlas=atlas)
     if save_name is not None:
         _save_figure(fig, save_name, script_id=script_id, save_path=save_path, verbose=verbose)
     return fig, (ax_main, ax_ratio)
@@ -903,9 +767,9 @@ def hist1d_comparison(
     if atlas:
         label_kwargs = {"status": "Internal"}
         label_kwargs.update(atlas_label_kwargs or {})
-        reserve_atlas_label_headroom(ax, ylog=ylog)
         add_atlas_label(ax, **label_kwargs)
 
+    _fit_top(ax, atlas=atlas)
     if save_name is not None:
         _save_figure(fig, save_name, script_id=script_id, save_path=save_path, verbose=verbose)
     return fig, ax
@@ -1125,9 +989,9 @@ def profile_plot(
     ax.set_xlabel(xlabel or "", loc="right")
     ax.set_ylabel(ylabel, loc="top")
     if atlas:
-        reserve_atlas_label_headroom(ax)
         add_atlas_label(ax, status="Internal")
 
+    _fit_top(ax, atlas=atlas)
     if save_name is not None:
         _save_figure(fig, save_name, script_id=script_id, save_path=save_path, verbose=verbose)
     return fig, ax
@@ -1189,9 +1053,9 @@ def efficiency_plot(
         ax.set_xlabel(xlabel or "", loc="right")
         ax.set_ylabel(ylabel, loc="top")
         if atlas:
-            reserve_atlas_label_headroom(ax)
             add_atlas_label(ax, status="Internal")
 
+        _fit_top(ax, atlas=atlas, fixed=ylim is not None)
         if save_name is not None:
             _save_figure(fig, save_name, script_id=script_id, save_path=save_path, verbose=verbose)
         return fig, ax
@@ -1220,7 +1084,6 @@ def efficiency_plot(
     ax_main.set_ylabel(ylabel, loc="top")
     _add_legend(ax_main, fontsize="x-small")
     if atlas:
-        reserve_atlas_label_headroom(ax_main)
         add_atlas_label(ax_main, status="Internal")
 
     def _ratio(values):
@@ -1245,6 +1108,7 @@ def efficiency_plot(
     ax_ratio.set_ylabel(ratio_label, loc="top")
     ax_ratio.set_xlabel(xlabel or "", loc="right")
 
+    _fit_top(ax_main, atlas=atlas, fixed=ylim is not None)
     if save_name is not None:
         _save_figure(fig, save_name, script_id=script_id, save_path=save_path, verbose=verbose)
     return fig, (ax_main, ax_ratio)
@@ -1337,10 +1201,10 @@ def systematic_summary_plot(
     ax.set_ylabel(r"Fractional uncertainty", loc="top")
     _add_legend(ax, fontsize="x-small", ncol=2)
     if atlas:
-        reserve_atlas_label_headroom(ax)
         add_atlas_label(ax, status="Internal")
 
 
+    _fit_top(ax, atlas=atlas)
     if save_name is not None:
         _save_figure(fig, save_name, script_id=script_id, save_path=save_path, verbose=verbose)
     return fig, ax
@@ -1422,9 +1286,9 @@ def plot_data_with_fit(
     ax.set_ylabel(ydescr, loc="top")
     _add_legend(ax, fontsize="x-small")
     if atlas:
-        reserve_atlas_label_headroom(ax)
         add_atlas_label(ax, status="Internal")
 
+    _fit_top(ax, atlas=atlas)
     if save_name is not None:
         _save_figure(fig, save_name, script_id=script_id, save_path=save_path, verbose=verbose)
     return fig, ax

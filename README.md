@@ -31,10 +31,9 @@ errors, solid colour-coded source curves, equally sized filled reference
 points and a fixed source-by-flavour legend; cutflow measurements explicitly
 distinguish nested events from nonsequential object bins (see `CHEATSHEET.md`).
 
-`reserve_annotation_headroom()` lets callers that draw extra overlays or set a
-final scale reserve label headroom last, after those changes. A later
-`set_ylim`/`set_yscale` replaces it, so call it once all overlays and the final
-linear/log/symlog scale are in place. See `CHEATSHEET.md` section 8.
+Plotters end by fitting the upper y limit to their legend and label with
+`fit_overlay_headroom()`; a caller that draws more afterwards fits again, last.
+See `CHEATSHEET.md` section 8.
 
 `check_figure()` reports mechanical layout defects (text clipped by the
 canvas, overlapping text, legends or labels over data, text below a 5 pt
@@ -74,7 +73,7 @@ imports, internal call structure, or other incidental implementation choices.
 | `histogram.py`         | Hist1D/Hist2D with flow bins, fill, rebin, normalize, profile; the one owner of grid comparability and bin-by-bin quotients |
 | `io.py`                | TTree loading, one TH1/TH2 loader with flows and fSumw2, native TH1D/TH2D writer                             |
 | `makelatex.py`         | LaTeX auto-generation for figure environments; compact plotbook with optional page map JSON                                   |
-| `plot.py`              | 1D/2D plots, ratio panels, stacked, fits, ATLAS label, final annotation headroom                                            |
+| `plot.py`              | 1D/2D plots, ratio panels, stacked, fits, ATLAS label                                                                       |
 | `printed.py`           | Printed-value manifest: each typeset number with key, value, text, source, context |
 | `provenance.py`        | Run provenance sidecars: clean committed source revisions, input/output hashes, recipe parameters, verification, verified directory publication |
 | `render.py`            | render_many: independent figure tasks, serial or forked pool, registry and printed records replayed in task order |

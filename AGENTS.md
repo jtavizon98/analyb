@@ -51,11 +51,10 @@ without producing an immediate error.
   Divide main-panel values and errors by widths; keep returned diagnostics and
   ratio panels in their existing raw/shape convention. Never normalize density
   heights by their sum.
-- Annotation headroom is a final limit operation. Reserve it after the last
-  overlay and the final linear/log/symlog scale; a later `set_ylim`,
-  `set_yscale`, or autoscale call silently replaces it. The reusable entry
-  point is `reserve_annotation_headroom(ax, (values, errors), ...)`, which uses
-  the explicit data/error envelope instead of inspecting artists.
+- Headroom is a final limit operation with one owner, `fit_overlay_headroom`
+  (the save-time check's own measurement). Plotters call it last on their main
+  axes; a caller that draws or changes limits afterwards calls it again, last.
+  No plotter carries its own top multiplier or reserved fraction.
 - `separate_ratio_errors=True` is a display choice for `points="reference"`. It
   never changes returned diagnostics. `ratio_presentation` and
   `separate_ratio_errors` are mutually exclusive; a `RatioPresentation` carries
