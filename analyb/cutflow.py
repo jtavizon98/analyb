@@ -176,7 +176,7 @@ def cutflow_chart(
         labels prevent nonsequential diagnostics being described as efficiencies.
     """
     from . import config
-    from .plot import save_figure
+    from .plot import _fit_top, save_figure
 
     if plt is None:
         raise ImportError("matplotlib required")
@@ -206,11 +206,11 @@ def cutflow_chart(
     ax.set_ylabel(ylabel, loc="top")
 
     if atlas:
-        from .plot import add_atlas_label, reserve_atlas_label_headroom
-        reserve_atlas_label_headroom(ax)
+        from .plot import add_atlas_label
         add_atlas_label(ax, status="Internal")
 
     pass  # constrained_layout enabled globally via matplotlibrc
+    _fit_top(ax, atlas=atlas)
     save_figure(fig, save_name, script_id=script_id, save_path=save_path, verbose=verbose)
     return fig, ax
 
@@ -241,7 +241,7 @@ def cutflow_comparison(stages, numerator, reference, *, numerator_errors=None,
     """
     from .colors import catppuccin_colors
     from .histogram import divide
-    from .plot import _data_errorbar, add_atlas_label
+    from .plot import _data_errorbar, _fit_top, add_atlas_label
     a, b = np.asarray(numerator, float), np.asarray(reference, float)
     if a.shape != b.shape or a.shape != (len(stages),):
         raise ValueError("cutflow stages and arrays must have equal length")
@@ -269,7 +269,7 @@ def cutflow_comparison(stages, numerator, reference, *, numerator_errors=None,
     main.set_ylabel('Fraction of initial yield' if normalized else ('Weighted events' if weighted else 'Events'),loc='top')
     low=min(0.,float(min(a.min(),b.min())))
     high=max(float(a.max()),float(b.max()))
-    main.set_ylim(low,high*1.45 if high>0 else 1.)
+    main.set_ylim(bottom=low)
     main.legend(loc='upper right',fontsize='small')
     add_atlas_label(main,status='Internal',lumi=False)
     ratio,err,_=divide(a,ae,b)
@@ -289,6 +289,7 @@ def cutflow_comparison(stages, numerator, reference, *, numerator_errors=None,
     ratio_ax.set_xticks(x);ratio_ax.set_xticklabels(stages,rotation=28,ha='right',fontsize='x-small')
     for ax in (main,ratio_ax):
         ax.set_xlim(edges[0],edges[-1]);ax.grid(True,alpha=.5);ax.set_axisbelow(True)
+    _fit_top(main, atlas=True)
     return fig,(main,ratio_ax)
 
 

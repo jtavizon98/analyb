@@ -14,168 +14,32 @@ def _content_fraction(ax, value):
     return float((v - lo) / (hi - lo))
 
 
-def test_reserve_annotation_headroom_linear_places_content_at_seventy_percent():
-    fig, ax = plt.subplots()
-    values = np.array([10.0, 100.0])
-    errors = np.array([1.0, 5.0])
-    ax.set_ylim(0, 100)
+def _tall_left_hist(n=12):
+    """Counts that peak under the label's column, so the label needs headroom."""
+    edges = np.linspace(0.0, 120.0, n + 1)
+    counts = np.linspace(900.0, 30.0, n)
+    return ab.Hist1D(counts, edges, errors=np.sqrt(counts))
 
-    assert ab.reserve_annotation_headroom(ax, (values, errors)) is True
 
-    # Top of the explicit envelope (105) sits 30% below the new ceiling.
-    assert _content_fraction(ax, 105.0) == pytest.approx(0.70)
-    assert ax.get_ylim()[0] == 0.0
+@pytest.mark.parametrize("ylog", [False, True])
+@pytest.mark.parametrize("atlas", [False, True])
+def test_plotter_fits_the_top_to_its_label_and_legend(ylog, atlas):
+    fig, ax = ab.hist1d_plot(_tall_left_hist(), "x [GeV]", label="sample", atlas=atlas, ylog=ylog)
+    findings = ab.check_figure(fig)
+    assert not [f for f in findings if f.check in ("text-over-data", "text-overlap")], findings
+    limits = ax.get_ylim()
+    ab.fit_overlay_headroom(ax)   # the plotter's fit is final: fitting again moves nothing
+    assert ax.get_ylim() == pytest.approx(limits, rel=1e-6)
     plt.close(fig)
 
 
-def test_late_limit_change_overwrites_headroom_and_helper_restores_it():
-    """Reproduce the demonstrated last-limit-overwrite ordering failure."""
-    fig, ax = plt.subplots()
-    values = np.array([100.0])
-    errors = np.array([0.0])
-    ax.set_ylim(0, 100)
-
-    ab.reserve_atlas_label_headroom(ax)
-    assert ax.get_ylim()[1] == pytest.approx(100 / 0.7)
-
-    # A later overlay or final scale/bounds call replaces the reserved limits.
-    ax.set_ylim(0, 100)
-    assert _content_fraction(ax, 100.0) == pytest.approx(1.0)
-
-    # Re-reserving after that last limit is what keeps the annotation clear.
-    assert ab.reserve_annotation_headroom(ax, (values, errors)) is True
-    assert _content_fraction(ax, 100.0) == pytest.approx(0.70)
-    plt.close(fig)
-
-
-def test_reserve_annotation_headroom_log_scale_reserves_decades():
-    fig, ax = plt.subplots()
-    values = np.array([10.0, 100.0])
-    errors = np.array([0.0, 0.0])
-    ax.set_yscale("log")
-    ax.set_ylim(1, 100)
-
-    assert ab.reserve_annotation_headroom(ax, (values, errors)) is True
-
-    lower, upper = ax.get_ylim()
-    assert lower == 1.0
-    assert np.log10(upper) == pytest.approx(np.log10(100.0) / 0.7)
-    assert _content_fraction(ax, 100.0) == pytest.approx(0.70)
-    plt.close(fig)
-
-
-def test_reserve_annotation_headroom_symlog_scale_uses_transform():
-    fig, ax = plt.subplots()
-    values = np.array([-1.0, 50.0])
-    errors = np.array([0.0, 0.0])
-    ax.set_yscale("symlog", linthresh=1.0)
-    ax.set_ylim(-10, 50)
-
-    assert ab.reserve_annotation_headroom(ax, (values, errors)) is True
-
-    assert _content_fraction(ax, 50.0) == pytest.approx(0.70)
-    assert ax.get_ylim()[0] == -10.0
-    plt.close(fig)
-
-
-def test_reserve_annotation_headroom_keeps_limits_when_content_clears():
-    fig, ax = plt.subplots()
-    ax.set_ylim(0, 1000)
-
-    assert ab.reserve_annotation_headroom(
-        ax, (np.array([50.0]), np.array([0.0])),
-    ) is False
-
-    assert ax.get_ylim() == (0, 1000)
-    plt.close(fig)
-
-
-def test_reserve_annotation_headroom_uses_envelope_not_artists():
-    fig, ax = plt.subplots()
-    ax.plot([0, 1], [0, 1e6])  # artist far above the declared envelope
-    ax.set_ylim(0, 100)
-
-    ab.reserve_annotation_headroom(ax, (np.array([100.0]), np.array([0.0])))
-
-    assert ax.get_ylim()[1] == pytest.approx(100 / 0.7)
-    assert _content_fraction(ax, 100.0) == pytest.approx(0.70)
-    plt.close(fig)
-
-
-def test_reserve_annotation_headroom_combines_series_and_ignores_nonfinite():
-    fig, ax = plt.subplots()
-    ax.set_ylim(0, 4)
-
-    assert ab.reserve_annotation_headroom(
-        ax,
-        (np.array([1.0, np.nan]), np.array([0.0, 0.0])),
-        (np.array([3.0, 2.0]), np.array([1.0, np.inf])),
-    ) is True
-
-    # Finite content top is 4 (3 + 1); NaN and inf entries are ignored.
-    assert _content_fraction(ax, 4.0) == pytest.approx(0.70)
-    plt.close(fig)
-
-
-def test_reserve_annotation_headroom_returns_false_for_no_finite_envelope():
-    fig, ax = plt.subplots()
-    ax.set_ylim(0, 100)
-
-    assert ab.reserve_annotation_headroom(
-        ax, (np.array([np.nan]), np.array([np.inf])),
-    ) is False
-    assert ax.get_ylim() == (0, 100)
-    plt.close(fig)
-
-
-def test_reserve_annotation_headroom_rejects_invalid_fraction():
-    fig, ax = plt.subplots()
-    with pytest.raises(ValueError, match="fraction"):
-        ab.reserve_annotation_headroom(
-            ax, (np.array([1.0]), np.array([0.0])), fraction=1.0,
-        )
-    plt.close(fig)
-
-
-def test_reserve_annotation_headroom_rejects_mismatched_error_shape():
-    fig, ax = plt.subplots()
-    with pytest.raises(ValueError, match="match values shape"):
-        ab.reserve_annotation_headroom(ax, (np.ones(10), np.ones((10, 1))))
-    plt.close(fig)
-
-
-def test_reserve_annotation_headroom_rejects_negative_errors():
-    fig, ax = plt.subplots()
-    with pytest.raises(ValueError, match="non-negative"):
-        ab.reserve_annotation_headroom(
-            ax, (np.ones(3), np.array([1.0, -1.0, 1.0])),
-        )
-    plt.close(fig)
-
-
-def test_reserve_annotation_headroom_overflowing_log_top_leaves_limits():
-    """A nonfinite inverse top is reported as no change, not passed to set_ylim."""
-    fig, ax = plt.subplots()
-    ax.set_yscale("log")
-    ax.set_ylim(1e-6, 1e6)
-    before = ax.get_ylim()
-
-    changed = ab.reserve_annotation_headroom(
-        ax, (np.array([1e6]), np.array([0.0])), fraction=0.999,
-    )
-
-    assert changed is False
-    assert ax.get_ylim() == before
-    plt.close(fig)
-
-
-def test_reserve_annotation_headroom_accepts_scalar_envelope():
-    fig, ax = plt.subplots()
-    ax.set_ylim(0, 6)
-
-    assert ab.reserve_annotation_headroom(ax, (5.0, 1.0)) is True
-
-    assert _content_fraction(ax, 6.0) == pytest.approx(0.70)
+def test_symlog_plotter_keeps_its_label_clear_of_the_data():
+    hist = _tall_left_hist()
+    fig, axes, _ = ab.artifact_comparison_1d(hist, hist.copy(), atlas=True, ysymlog_linthresh=10.0)
+    main = axes[0]
+    assert main.get_yscale() == "symlog"
+    _, label_y0, _, _ = ab.artist_axes_bounds(main.texts[0], main)
+    assert _content_fraction(main, float((hist.counts + hist.errors).max())) < label_y0
     plt.close(fig)
 
 
@@ -239,17 +103,16 @@ def test_artist_axes_bounds_tracks_layout_after_size_change():
     plt.close(fig)
 
 
-def test_reserved_headroom_clears_atlas_label_text():
-    fig, ax = plt.subplots(figsize=(5, 4))
-    values = np.array([100.0])
-    errors = np.array([0.0])
-    ax.errorbar([0], values, yerr=errors)
-    ax.set_ylim(0, 100)
-
-    assert ab.reserve_annotation_headroom(ax, (values, errors)) is True
-    ab.add_atlas_label(ax, lumi=False)
-    fig.canvas.draw()
-
-    _, label_y0, _, _ = ab.artist_axes_bounds(ax.texts[-1], ax)
-    assert _content_fraction(ax, 100.0) < label_y0
+def test_caller_limits_stand_unless_the_label_would_cover_data():
+    centers = np.array([0.5, 1.5, 2.5, 3.5])
+    eff = np.array([0.98, 0.97, 0.6, 0.5])
+    err = np.full(4, 0.01)
+    fig, (main, _) = ab.efficiency_plot(centers, eff, err, err, reference=(centers, eff, err, err),
+                                        ylim=(0.0, 1.05), atlas=True)
+    assert main.get_ylim()[1] > 1.05   # raised: the label sits over the efficiency plateau
+    assert not [f for f in ab.check_figure(fig) if f.check == "text-over-data"]
+    plt.close(fig)
+    fig, (main, _) = ab.efficiency_plot(centers, eff * 0.5, err, err, reference=(centers, eff * 0.5, err, err),
+                                        ylim=(0.0, 1.05), atlas=True)
+    assert main.get_ylim() == (0.0, 1.05)   # nothing covered: the caller's range stands
     plt.close(fig)

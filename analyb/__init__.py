@@ -64,8 +64,7 @@ from .plot import (
     hist1d_comparison, hist1d_overlay,
     hist2d_plot, scatter_plot, profile_plot, efficiency_plot,
     systematic_summary_plot,
-    plot_data_with_fit, add_atlas_label, reserve_atlas_label_headroom,
-    reserve_annotation_headroom, artist_axes_bounds,
+    plot_data_with_fit, add_atlas_label, artist_axes_bounds,
     save_figure,
 )
 from .cutflow import (
@@ -117,8 +116,7 @@ __all__ = [
     "hist1d_plot", "hist1d_with_ratio", "hist1d_stacked",
     "hist1d_comparison", "hist1d_overlay", "hist2d_plot", "scatter_plot",
     "profile_plot", "efficiency_plot", "systematic_summary_plot",
-    "plot_data_with_fit", "add_atlas_label", "reserve_atlas_label_headroom",
-    "reserve_annotation_headroom", "artist_axes_bounds",
+    "plot_data_with_fit", "add_atlas_label", "artist_axes_bounds",
     "save_figure", "check_figure", "Finding", "FigureCheckError",
     "overlay_need", "OverlayNeed", "fit_overlay_headroom",
     "CutflowData", "cutflow_chart", "cutflow_ylabel",
