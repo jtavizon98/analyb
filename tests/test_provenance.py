@@ -307,3 +307,89 @@ def test_no_remote_url_is_recorded(repo, run):
     assert document["repos"]["a"]["head_in_remote_ref"] is True
     content = (out / "provenance.json").read_bytes()
     assert b"tok3n-SECRET" not in content and b"git.example.invalid" not in content
+
+
+# publish_directory: the previous tree is replaced only by a verified one
+
+
+def _book(tmp_path, repo, **overrides):
+    final = tmp_path / "book"
+    data = tmp_path / "input.root"
+    data.write_bytes(b"root-bytes")
+    digest = provenance.sha256_file(data)
+
+    def render(staging):
+        staging_path = os.path.join(staging, "figure.pdf")
+        with open(staging_path, "w") as handle:
+            handle.write("new")
+        return [staging_path]
+
+    arguments = dict(render=render, sources={"code": provenance.source_state(repo)},
+                     inputs={"data": data}, loaded={"data": digest},
+                     expected={"inputs": {"data": {"sha256": digest}}})
+    arguments.update(overrides)
+    return final, data, arguments
+
+
+def _previous(final):
+    final.mkdir()
+    (final / "figure.pdf").write_text("old")
+
+
+def _siblings(tmp_path):
+    return sorted(p.name for p in tmp_path.iterdir() if p.name.startswith(".book"))
+
+
+def test_a_verified_book_replaces_the_previous_one(repo, tmp_path):
+    final, _, arguments = _book(tmp_path, repo)
+    _previous(final)
+    document = provenance.publish_directory(final, **arguments)
+    assert (final / "figure.pdf").read_text() == "new"
+    assert provenance.verify_sidecar(final)["outputs"] == document["outputs"]
+    assert _siblings(tmp_path) == []
+
+
+def _fail_render(staging):
+    raise RuntimeError("render broke")
+
+
+@pytest.mark.parametrize("problem", ["render", "drift", "loaded", "expected"])
+def test_any_failure_keeps_the_previous_book(repo, tmp_path, problem):
+    final, data, arguments = _book(tmp_path, repo)
+    _previous(final)
+    if problem == "render":
+        arguments["render"] = _fail_render
+    elif problem == "drift":
+        inner = arguments["render"]
+
+        def render(staging):
+            (repo / "module.py").write_text("VALUE = 2\n")
+            git(repo, "commit", "-qam", "changed while rendering")
+            return inner(staging)
+
+        arguments["render"] = render
+    elif problem == "loaded":
+        arguments["loaded"] = {"data": "0" * 64}
+    else:
+        arguments["expected"] = {"inputs": {"data": {"sha256": "0" * 64}}}
+    with pytest.raises((RuntimeError, provenance.ProvenanceError)):
+        provenance.publish_directory(final, **arguments)
+    assert (final / "figure.pdf").read_text() == "old"
+    assert _siblings(tmp_path) == []
+
+
+def test_a_failed_replacement_restores_the_previous_book(repo, tmp_path, monkeypatch):
+    final, _, arguments = _book(tmp_path, repo)
+    _previous(final)
+    real_replace = os.replace
+
+    def replace(source, target):
+        if os.path.basename(source).startswith(".book.staging-"):
+            raise OSError("disk full")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(os, "replace", replace)
+    with pytest.raises(OSError, match="disk full"):
+        provenance.publish_directory(final, **arguments)
+    assert (final / "figure.pdf").read_text() == "old"
+    assert _siblings(tmp_path) == []

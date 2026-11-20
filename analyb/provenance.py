@@ -14,7 +14,9 @@ identities (pinned revisions, artifact hashes) belong to the caller, which
 compares them with ``verify_sidecar(..., expected=...)``. ``source_state``,
 ``package_checkout`` and ``verify_source`` let a caller fail early, locate the
 checkout an imported package really comes from, and confirm before
-publication that it did not change. Raw ``argv`` and Git remotes are never
+publication that it did not change. ``publish_directory`` combines them: it
+renders into a staging directory and replaces the published directory only
+after its sidecar verifies. Raw ``argv`` and Git remotes are never
 recorded; callers pass an explicit dictionary of safe recipe parameters.
 """
 
@@ -411,3 +413,65 @@ def verify_source(record, *, module=None, relative_path=None):
                 f"{module.__name__} comes from {checkout!r}, not from the "
                 f"recorded checkout {record['path']!r}"
             )
+
+
+def publish_directory(final, render, *, sources, inputs, configs=None, parameters=None,
+                      seeds=None, loaded=None, expected=None):
+    """Build an output directory beside ``final``; replace ``final`` only once it verifies.
+
+    ``render(staging)`` writes every output into a fresh sibling directory and
+    returns the output paths. Then, in the staging directory, the sidecar is
+    written (``sources`` maps roles to ``source_state`` results captured before
+    rendering; ``inputs``, ``configs``, ``parameters`` and ``seeds`` as for
+    :func:`write_sidecar`), every source must still be clean at its recorded
+    HEAD, the recorded input hashes must equal ``loaded`` (role -> sha256 the
+    caller saw when it read each input), and the sidecar must verify against
+    ``expected`` (accepted identities, see :func:`verify_sidecar`). Only then
+    is ``final`` replaced atomically; if the replacement fails the previous
+    tree is restored. On any failure the staging directory is removed and
+    ``final`` is left as it was. Returns the sidecar document.
+    """
+    final = os.path.abspath(os.fspath(final))
+    parent = os.path.dirname(final)
+    os.makedirs(parent, exist_ok=True)
+    staging = tempfile.mkdtemp(dir=parent, prefix=f".{os.path.basename(final)}.staging-")
+    try:
+        outputs = render(staging)
+        document = write_sidecar(
+            staging, repos={role: state["path"] for role, state in sources.items()},
+            inputs=inputs, configs=configs, parameters=parameters, seeds=seeds, outputs=outputs,
+        )
+        for state in sources.values():
+            verify_source(state)
+        changed = sorted(role for role, digest in (loaded or {}).items()
+                         if document["inputs"].get(role, {}).get("sha256") != digest)
+        if changed:
+            raise ProvenanceError("inputs changed after they were loaded: " + ", ".join(changed))
+        verify_sidecar(staging, expected=expected)
+        _replace_tree(staging, final)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return document
+
+
+def _replace_tree(staging, final):
+    """Move ``staging`` to ``final``; restore the previous tree if that fails."""
+    backup = None
+    if os.path.lexists(final):
+        backup = tempfile.mkdtemp(dir=os.path.dirname(final), prefix=f".{os.path.basename(final)}.previous-")
+        os.rmdir(backup)
+        os.replace(final, backup)
+    try:
+        os.replace(staging, final)
+    except BaseException:
+        if backup is not None:
+            os.replace(backup, final)
+        raise
+    if backup is not None:
+        shutil.rmtree(backup, ignore_errors=True)
+    descriptor = os.open(os.path.dirname(final), os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)

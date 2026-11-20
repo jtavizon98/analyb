@@ -1238,6 +1238,28 @@ provenance.verify_sidecar(out_dir, expected={
 })
 ```
 
+To publish a whole output directory, let `publish_directory` do all of the
+above: it renders into a fresh sibling directory, writes the sidecar there,
+checks the sources, the load-time input hashes and the accepted identities,
+and only then replaces the previous directory atomically (restoring it if the
+replacement fails). Any failure leaves the previous directory untouched.
+
+```python
+def render(staging):                      # write every output into staging
+    ...
+    return [Path(staging) / "evidence.json", *figure_paths]
+
+sidecar = provenance.publish_directory(
+    final_dir, render,
+    sources=start,                        # source_state results taken before work
+    inputs={"benchmark": benchmark_root},
+    configs={"mapping": mapping_json},
+    parameters={"force": False},
+    loaded={"benchmark": sha256_seen_when_loading},
+    expected={"inputs": {"benchmark": {"sha256": accepted_sha256}}},
+)
+```
+
 `provenance.json` holds `schema`, `schema_version`, `created_utc`, `cwd`,
 `parameters`, `repos` (per role: `path`, `head`, `branch`,
 `head_in_remote_ref`), `inputs`/`configs` (per role: `path`, `size`,

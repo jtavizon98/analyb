@@ -74,7 +74,7 @@ imports, internal call structure, or other incidental implementation choices.
 | `makelatex.py`         | LaTeX auto-generation for figure environments; compact plotbook with optional page map JSON                                   |
 | `plot.py`              | 1D/2D plots, ratio panels, stacked, fits, ATLAS label, final annotation headroom                                            |
 | `printed.py`           | Printed-value manifest: each typeset number with key, value, text, source, context |
-| `provenance.py`        | Run provenance sidecars: clean committed source revisions, input/output hashes, recipe parameters, verification               |
+| `provenance.py`        | Run provenance sidecars: clean committed source revisions, input/output hashes, recipe parameters, verification, verified directory publication |
 | `render.py`            | render_many: independent figure tasks, serial or forked pool, registry and printed records replayed in task order |
 | `stats.py`             | Chi-squared, Poisson likelihood, Clopper-Pearson binomial intervals, Gaussian model functions                                 |
 | `style.py`             | Import-time MathText-first Matplotlib style from `styles/analyb.mplstyle`; applied on `import analyb`                         |
