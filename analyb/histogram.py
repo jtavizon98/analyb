@@ -719,8 +719,10 @@ def require_comparable(first, *others, edges, finite=False, operation="compariso
         raise ValueError(f"{operation}: errors must match their counts")
     if isinstance(first, Hist2D):
         expected = (first.x_edges.size - 1, first.y_edges.size - 1)
-        if any(hist.counts.shape != expected for hist in (first, *others)):
-            raise ValueError(f"{operation}: Hist2D counts must match its x/y edges")
+    else:
+        expected = (first.edges.size - 1,)
+    if any(hist.counts.shape != expected for hist in (first, *others)):
+        raise ValueError(f"{operation}: counts must match the bins of their edges")
     if finite:
         for hist in (first, *others):
             if not np.all(np.isfinite(hist.counts)):
@@ -730,7 +732,11 @@ def require_comparable(first, *others, edges, finite=False, operation="compariso
 
 
 class Quotient(NamedTuple):
-    """Bin-by-bin quotient; ``value`` and ``error`` are NaN where not ``valid``."""
+    """Bin-by-bin quotient; ``value`` and ``error`` are NaN where not ``valid``.
+
+    ``valid`` means the central value is defined; an error can still be NaN
+    or infinite in a valid bin when an input error was.
+    """
 
     value: np.ndarray
     error: Optional[np.ndarray]
@@ -740,9 +746,13 @@ class Quotient(NamedTuple):
 def divide(numerator, numerator_error, denominator, denominator_error=None):
     """``numerator / denominator`` per bin with independent-error propagation.
 
-    A bin is defined when every supplied input is finite and the denominator
-    is nonzero; elsewhere value and error are NaN, never a fill value that
-    could be read as a measurement. With ``denominator_error`` the error is
+    A bin is defined when numerator and denominator are finite and the
+    denominator is nonzero; elsewhere value and error are NaN, never a fill
+    value that could be read as a measurement. Errors never decide whether a
+    value exists: a non-finite input error (``sqrt`` of a negative unweighted
+    count, say) gives a non-finite error in that bin and leaves the value
+    alone, so the value does not depend on which errors are drawn. With
+    ``denominator_error`` the error is
     ``hypot(sigma_n / |d|, |n| sigma_d / d**2)``, written without relative
     errors so a zero numerator keeps a finite error. Without it, the error is
     the numerator-only ``sigma_n / |d|``, for plots that draw the denominator
@@ -756,7 +766,7 @@ def divide(numerator, numerator_error, denominator, denominator_error=None):
                          for e in (numerator_error, denominator_error) if e is not None]
     if any(a.shape != n.shape for a in supplied):
         raise ValueError("divide: inputs must share one shape")
-    valid = np.logical_and.reduce([np.isfinite(a) for a in supplied]) & (d != 0)
+    valid = np.isfinite(n) & np.isfinite(d) & (d != 0)
     value = np.full(n.shape, np.nan)
     np.divide(n, d, out=value, where=valid)
     error = None

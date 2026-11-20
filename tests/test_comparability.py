@@ -30,10 +30,28 @@ def test_divide_numerator_only_and_central_only():
 
 
 def test_divide_never_fills_undefined_bins():
-    q = ab.divide([1.0, np.nan, 1.0, np.inf], [0.1, 0.1, np.nan, 0.1],
-                  [1.0, 1.0, 1.0, 1.0], [0.1, 0.1, 0.1, 0.1])
-    np.testing.assert_array_equal(q.valid, [True, False, False, False])
+    q = ab.divide([1.0, np.nan, 2.0, np.inf, 3.0], [0.1, 0.1, 0.1, 0.1, 0.1],
+                  [1.0, 1.0, np.nan, 1.0, 0.0], [0.1, 0.1, 0.1, 0.1, 0.1])
+    np.testing.assert_array_equal(q.valid, [True, False, False, False, False])
     assert np.isnan(q.value[1:]).all() and np.isnan(q.error[1:]).all()
+
+
+def test_errors_never_decide_whether_a_value_exists():
+    # sqrt of a negative unweighted count is NaN; the ratio 4/2 is still defined
+    q = ab.divide([4.0, 3.0], [np.nan, 1.0], [2.0, 2.0], [0.5, np.inf])
+    np.testing.assert_array_equal(q.valid, [True, True])
+    np.testing.assert_allclose(q.value, [2.0, 1.5])
+    assert np.isnan(q.error[0]) and np.isinf(q.error[1])
+
+
+def test_unweighted_negative_bin_keeps_its_ratio_value():
+    """Default errors sqrt(counts) are NaN for a negative bin; main returned -0.5 here."""
+    with np.errstate(invalid="ignore"):
+        num = ab.Hist1D([5.0, -1.0, 4.0], [0.0, 1.0, 2.0, 3.0])
+    den = ab.Hist1D([4.0, 2.0, 2.0], [0.0, 1.0, 2.0, 3.0])
+    for include in (True, False):
+        value, _ = ab.ratio(num, den, include_denominator_error=include)
+        np.testing.assert_allclose(value, [1.25, -0.5, 2.0])
 
 
 def test_divide_scalars_and_shape_mismatch():
@@ -82,7 +100,7 @@ def test_hist2d_counts_must_fit_their_grid():
     h = ab.Hist2D(np.ones((2, 3)), [0.0, 1.0, 2.0], [0.0, 1.0, 2.0, 3.0], errors=np.ones((2, 3)))
     transposed = ab.Hist2D(np.ones((3, 2)), [0.0, 1.0, 2.0], [0.0, 1.0, 2.0, 3.0],
                            errors=np.ones((3, 2)))
-    with pytest.raises(ValueError, match="x/y edges"):
+    with pytest.raises(ValueError, match="bins of their edges"):
         ab.require_comparable(h, transposed, edges="exact")
 
 
@@ -104,3 +122,11 @@ def test_ratio_and_pairwise_comparison_agree_bin_by_bin():
     np.testing.assert_array_equal(value, comparison.ratio)
     np.testing.assert_array_equal(error, comparison.ratio_error)
     np.testing.assert_array_equal(comparison.ratio_valid, [True, True, False, True])
+
+
+def test_hist1d_counts_must_fit_their_edges():
+    h = _hist([0.0, 1.0, 2.0, 3.0])
+    h.counts = np.ones(2)
+    h.errors = np.ones(2)
+    with pytest.raises(ValueError, match="bins of their edges"):
+        ab.require_comparable(_hist([0.0, 1.0, 2.0, 3.0]), h, edges="exact")
