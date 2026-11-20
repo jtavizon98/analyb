@@ -79,7 +79,7 @@ imports, internal call structure, or other incidental implementation choices.
 | `provenance.py`        | Run provenance sidecars: clean committed source revisions, input/output hashes, recipe parameters, verification, verified directory publication |
 | `render.py`            | render_many: independent figure tasks, serial or forked pool, registry and printed records replayed in task order |
 | `stats.py`             | Chi-squared, Poisson likelihood, Clopper-Pearson binomial intervals, Gaussian model functions                                 |
-| `style.py`             | Import-time MathText-first Matplotlib style from `styles/analyb.mplstyle`; applied on `import analyb`                         |
+| `style.py`             | Import-time MathText-first Matplotlib style from `styles/analyb.mplstyle`, applied over matplotlib's defaults on `import analyb`; a host matplotlibrc does not reach analyb figures |
 | `units.py`             | SI prefix scaling, bin-width formatting                                                                                       |
 | `variables.py`         | Empty, caller-extensible branch → (LaTeX label, unit) registry                                                               |
 | `yieldtable.py`        | Yield tables (text/LaTeX export)                                                                                              |

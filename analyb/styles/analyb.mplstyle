@@ -1,5 +1,6 @@
-# Portable ATLAS-inspired defaults. Keep text.usetex disabled so plots render
-# identically on hosts without a TeX installation.
+# Portable ATLAS-inspired defaults, applied over matplotlib's defaults: a host's
+# matplotlibrc does not reach analyb figures. Keep text.usetex disabled so plots
+# render identically on hosts without a TeX installation.
 text.usetex: False
 font.family: serif
 font.serif: DejaVu Serif, STIXGeneral, serif
@@ -28,3 +29,16 @@ image.aspect: auto
 image.origin: lower
 pdf.fonttype: 42
 svg.fonttype: none
+# Settings analyb figures used to inherit from the author's matplotlibrc,
+# fixed here with the same values (2026-11-21) so figures do not change.
+axes.prop_cycle: cycler('color', ['red', 'green', 'blue', '9467bd', '8c564b', 'e377c2', '7f7f7f', 'bcbd22', '17becf', 'black'])
+axes.titlesize: medium
+figure.dpi: 600
+font.size: 12
+legend.columnspacing: 1.5
+legend.handletextpad: 0.6
+lines.markeredgewidth: 0.5
+lines.markerfacecolor: white
+lines.markersize: 4
+patch.facecolor: white
+savefig.format: svg

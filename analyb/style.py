@@ -6,8 +6,12 @@ from matplotlib import style
 
 
 def apply():
-    """Apply analyb's MathText-first plotting style."""
-    style.use(Path(__file__).with_name("styles") / "analyb.mplstyle")
+    """Apply analyb's MathText-first plotting style over matplotlib's defaults.
+
+    The reset comes first, so a host's matplotlibrc does not reach analyb figures: the same code draws the same figure
+    on every host. rc settings a program makes after ``import analyb`` still apply.
+    """
+    style.use(["default", Path(__file__).with_name("styles") / "analyb.mplstyle"])
 
 
 def plotbook_context():
