@@ -829,3 +829,10 @@ def test_loader_refuses_non_finite_values(tmp_path):
                                  to_TAxis("xaxis", "", 2, 0.0, 2.0))
     with pytest.raises(ValueError, match="non-finite values"):
         ab.load_histogram(path, "h")
+
+
+def test_writer_refuses_what_the_reader_would_refuse(tmp_path):
+    hist = ab.hist1d(np.array([0.5, 1.5]), weights=np.array([np.nan, 1.0]),
+                     bins=np.array([0.0, 1.0, 2.0]))
+    with pytest.raises(ValueError, match="non-finite"):
+        ab.save_hist_to_root("h", hist, file=tmp_path / "nan.root", mode="recreate")

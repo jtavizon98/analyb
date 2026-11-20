@@ -385,6 +385,9 @@ def _write_native(root_file, name, hist, has_sumw2):
 
     values = hist.values(flow=True)
     sumw2 = hist.variances(flow=True)
+    # load_histogram refuses these, so refuse them where they are written.
+    if not (np.all(np.isfinite(values)) and np.all(np.isfinite(sumw2))):
+        raise ValueError(f"{name!r} has non-finite values or variances (flow bins included)")
     interior = hist.counts
     interior_w2 = hist.errors ** 2 if has_sumw2 else interior
     stored_sumw2 = sumw2.ravel(order="F") if has_sumw2 else np.array([], dtype=np.float64)
