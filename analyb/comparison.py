@@ -13,8 +13,7 @@ import numpy as np
 
 from . import config, makelatex
 from .colors import PALETTES, catppuccin_colorbars, catppuccin_colors, current_colorbar
-from .histogram import Hist1D, Hist2D, _aligned_edge_indices, divide, require_comparable
-from .io import RootHistogram
+from .histogram import Hist1D, Hist2D, divide, require_comparable
 from .plot import (
     _add_legend,
     _data_errorbar,
@@ -193,75 +192,6 @@ def ratio_range_counts(values, ratio_ylim, *, valid=None, stacks=None):
             "undefined": int(np.count_nonzero(~finite)), "stacks_beyond": int(np.count_nonzero(beyond))}
 
 
-def rebin_root_histogram(source, target_edges):
-    """Aggregate raw ROOT bins onto aligned target edges (one array per axis).
-
-    Whole bins and their variances are summed, including flow bins and TH2
-    corners. A narrower range sends excluded bins into the corresponding flows.
-    Wider ranges and edges splitting source bins are unavailable. Only rounding
-    at double-precision scale, capped by local bin width, is accepted. Inputs
-    are never modified; the output adopts exact copies of the target edges.
-    """
-    histogram = source.histogram
-    if isinstance(histogram, Hist1D):
-        if histogram.is_density:
-            raise ValueError("rebinning requires raw counts, before density conversion")
-        source_edges = (histogram.edges,)
-    elif isinstance(histogram, Hist2D):
-        source_edges = (histogram.x_edges, histogram.y_edges)
-    else:
-        raise TypeError("rebinning expects a RootHistogram containing Hist1D or Hist2D")
-    if len(target_edges) != len(source_edges):
-        raise ValueError("provide one target edge array per source axis")
-
-    edges = tuple(np.array(axis, dtype=np.float64, copy=True) for axis in target_edges)
-    destinations = []
-    for original, target in zip(source_edges, edges):
-        if (target.ndim != 1 or target.size < 2
-                or not np.all(np.isfinite(target)) or np.any(np.diff(target) <= 0)):
-            raise ValueError("target edges must be finite and strictly increasing")
-        if not np.all(np.isfinite(original)) or np.any(np.diff(original) <= 0):
-            raise ValueError("source edges must be finite and strictly increasing")
-        # Shared with rebin_to_edges: roundoff at double-precision scale of the
-        # coordinate or axis span, capped by the narrower neighboring bin width.
-        matched = _aligned_edge_indices(original, target)
-        # Source index 0 is underflow; n+1 is overflow. Search by source
-        # boundary index so immaterial floating differences cannot move a bin.
-        source_bins = np.arange(len(original) + 1) - 1
-        destinations.append(np.searchsorted(matched, source_bins, side="right"))
-
-    values = np.asarray(source.values_with_flow)
-    variances = np.asarray(source.variances_with_flow)
-    expected = tuple(len(axis) + 1 for axis in source_edges)
-    if values.shape != expected or variances.shape != expected:
-        raise ValueError("flow-inclusive arrays must match source axes")
-    if (not np.all(np.isfinite(values)) or not np.all(np.isfinite(variances))
-            or np.any(variances < 0)):
-        raise ValueError("counts must be finite and variances finite and nonnegative")
-    rebinned_values = np.zeros(tuple(len(axis) + 1 for axis in edges))
-    rebinned_variances = np.zeros_like(rebinned_values)
-    np.add.at(rebinned_values, np.ix_(*destinations), values)
-    np.add.at(rebinned_variances, np.ix_(*destinations), variances)
-    central = (slice(1, -1),) * len(edges)
-    errors = np.sqrt(rebinned_variances[central])
-    if isinstance(histogram, Hist1D):
-        rebinned = Hist1D(
-            rebinned_values[central], edges[0], errors=errors,
-            underflow=rebinned_values[0], overflow=rebinned_values[-1],
-            is_weighted=histogram.is_weighted, label=histogram.label, unit=histogram.unit,
-        )
-    else:
-        rebinned = Hist2D(
-            rebinned_values[central], *edges, errors=errors,
-            x_label=histogram.x_label, y_label=histogram.y_label,
-            x_unit=histogram.x_unit, y_unit=histogram.y_unit,
-        )
-    return RootHistogram(
-        rebinned, rebinned_values, rebinned_variances,
-        source.has_stored_variances, source.classname, source.axis_titles,
-    )
-
-
 def _validate_pair(numerator, reference):
     require_comparable(numerator, reference, edges="exact", finite=True)
 
@@ -319,8 +249,9 @@ def _shape_chi2(difference, covariance, normalization_weights):
 def compare_histograms(numerator, reference, *, shape=True):
     """Compare exact-binned Hist1D or Hist2D inputs as numerator/reference.
 
-    Flow bins are intentionally excluded from displayed yields and shapes; use
-    :class:`analyb.io.RootHistogram` source arrays to report them separately.
+    Flow bins are intentionally excluded from displayed yields and shapes; read
+    them with ``values(flow=True)`` and ``variances(flow=True)`` to report them
+    separately.
     Set ``shape=False`` to compute only raw yield, ratio, and difference
     diagnostics without allocating normalized-shape covariance matrices.
     Shape uncertainties include the correlations induced by normalization.

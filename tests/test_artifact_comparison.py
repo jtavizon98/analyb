@@ -62,31 +62,27 @@ def test_external_weighted_th1_preserves_variances_signed_bins_and_flows(tmp_pat
     with uproot.recreate(path) as root_file:
         root_file["dir/h"] = _weighted_th1(values, variances, edges)
 
-    loaded = ab.load_root_histogram(path, "dir/h")
+    loaded = ab.load_histogram(path, "dir/h")
 
-    assert loaded.has_stored_variances
-    assert loaded.classname == "TH1D"
-    np.testing.assert_array_equal(loaded.values_with_flow, values)
-    np.testing.assert_array_equal(loaded.variances_with_flow, variances)
-    np.testing.assert_array_equal(loaded.histogram.counts, values[1:-1])
-    np.testing.assert_array_equal(loaded.histogram.errors, np.sqrt(variances[1:-1]))
-    np.testing.assert_array_equal(loaded.histogram.edges, edges)
-    assert loaded.histogram.underflow == 3.0
-    assert loaded.histogram.overflow == -1.0
-    assert loaded.axis_titles == ("Observable [GeV]",)
+    assert isinstance(loaded, ab.Hist1D) and loaded.is_weighted
+    np.testing.assert_array_equal(loaded.values(flow=True), values)
+    np.testing.assert_array_equal(loaded.variances(flow=True), variances)
+    np.testing.assert_array_equal(loaded.counts, values[1:-1])
+    np.testing.assert_array_equal(loaded.errors, np.sqrt(variances[1:-1]))
+    np.testing.assert_array_equal(loaded.edges, edges)
+    assert (loaded.underflow, loaded.overflow) == (3.0, -1.0)
+    assert loaded.label == "Observable [GeV]"
 
     target = np.array([1.0, 6.0])
-    rebinned = ab.rebin_root_histogram(loaded, (target,))
-    np.testing.assert_array_equal(rebinned.values_with_flow, [1.0, 5.0, -1.0])
-    np.testing.assert_array_equal(rebinned.variances_with_flow, [4.25, 25.0, 1.0])
-    assert rebinned.histogram.underflow == 1.0
-    assert rebinned.histogram.overflow == -1.0
-    np.testing.assert_array_equal(rebinned.histogram.errors, [5.0])
-    np.testing.assert_array_equal(loaded.values_with_flow, values)
-    np.testing.assert_array_equal(loaded.variances_with_flow, variances)
-    np.testing.assert_array_equal(loaded.histogram.edges, edges)
+    rebinned = ab.rebin(loaded, edges=target)
+    np.testing.assert_array_equal(rebinned.values(flow=True), [1.0, 5.0, -1.0])
+    np.testing.assert_array_equal(rebinned.variances(flow=True), [4.25, 25.0, 1.0])
+    np.testing.assert_array_equal(rebinned.errors, [5.0])
+    np.testing.assert_array_equal(loaded.values(flow=True), values)
+    np.testing.assert_array_equal(loaded.variances(flow=True), variances)
+    np.testing.assert_array_equal(loaded.edges, edges)
     target[0] = 0.0
-    np.testing.assert_array_equal(rebinned.histogram.edges, [1.0, 6.0])
+    np.testing.assert_array_equal(rebinned.edges, [1.0, 6.0])
 
 
 def test_external_loader_requires_stored_variances_by_default(tmp_path):
@@ -96,11 +92,11 @@ def test_external_loader_requires_stored_variances_by_default(tmp_path):
         root_file["h"] = np.array([4.0, 9.0]), np.array([0.0, 1.0, 2.0])
 
     with pytest.raises(ValueError, match="no stored variances"):
-        ab.load_root_histogram(path, "h")
+        ab.load_histogram(path, "h")
 
-    loaded = ab.load_root_histogram(path, "h", require_variances=False)
-    assert not loaded.has_stored_variances
-    np.testing.assert_array_equal(loaded.histogram.errors, [2.0, 3.0])
+    loaded = ab.load_histogram(path, "h", require_variances=False)
+    assert not loaded.is_weighted
+    np.testing.assert_array_equal(loaded.errors, [2.0, 3.0])
 
 
 def test_external_nonsquare_th2_preserves_xy_orientation_and_flows(tmp_path):
@@ -115,32 +111,30 @@ def test_external_nonsquare_th2_preserves_xy_orientation_and_flows(tmp_path):
             values, variances, x_edges, y_edges,
         )
 
-    loaded = ab.load_root_histogram(path, "response")
+    loaded = ab.load_histogram(path, "response")
 
-    assert loaded.classname == "TH2D"
-    assert loaded.histogram.counts.shape == (2, 3)
-    np.testing.assert_array_equal(loaded.values_with_flow, values)
-    np.testing.assert_array_equal(loaded.variances_with_flow, variances)
-    np.testing.assert_array_equal(loaded.histogram.counts, values[1:-1, 1:-1])
-    np.testing.assert_array_equal(
-        loaded.histogram.errors, np.sqrt(variances[1:-1, 1:-1]),
-    )
-    np.testing.assert_array_equal(loaded.histogram.x_edges, x_edges)
-    np.testing.assert_array_equal(loaded.histogram.y_edges, y_edges)
+    assert isinstance(loaded, ab.Hist2D)
+    assert loaded.counts.shape == (2, 3)
+    np.testing.assert_array_equal(loaded.values(flow=True), values)
+    np.testing.assert_array_equal(loaded.variances(flow=True), variances)
+    np.testing.assert_array_equal(loaded.counts, values[1:-1, 1:-1])
+    np.testing.assert_array_equal(loaded.errors, np.sqrt(variances[1:-1, 1:-1]))
+    np.testing.assert_array_equal(loaded.x_edges, x_edges)
+    np.testing.assert_array_equal(loaded.y_edges, y_edges)
 
-    rebinned = ab.rebin_root_histogram(loaded, ([1.0, 4.0], [0.0, 8.0]))
-    np.testing.assert_array_equal(rebinned.values_with_flow, [
+    rebinned = ab.rebin(loaded, edges=([1.0, 4.0], [0.0, 8.0]))
+    np.testing.assert_array_equal(rebinned.values(flow=True), [
         [12, 20, 13], [21, 25, 14], [31, 35, 19],
     ])
-    np.testing.assert_array_equal(rebinned.variances_with_flow, [
+    np.testing.assert_array_equal(rebinned.variances(flow=True), [
         [16, 24, 15], [23, 27, 15], [33, 37, 20],
     ])
-    np.testing.assert_array_equal(rebinned.histogram.counts, [[25]])
-    np.testing.assert_array_equal(rebinned.histogram.errors, [[np.sqrt(27)]])
-    assert rebinned.values_with_flow.sum() == values.sum()
-    assert rebinned.variances_with_flow.sum() == variances.sum()
-    np.testing.assert_array_equal(loaded.values_with_flow, values)
-    np.testing.assert_array_equal(loaded.variances_with_flow, variances)
+    np.testing.assert_array_equal(rebinned.counts, [[25]])
+    np.testing.assert_array_equal(rebinned.errors, [[np.sqrt(27)]])
+    assert rebinned.values(flow=True).sum() == values.sum()
+    assert rebinned.variances(flow=True).sum() == variances.sum()
+    np.testing.assert_array_equal(loaded.values(flow=True), values)
+    np.testing.assert_array_equal(loaded.variances(flow=True), variances)
 
 
 def test_pairwise_diagnostics_use_numerator_reference_orientation_and_mask_zeros():
@@ -415,34 +409,32 @@ def test_raw_200_by_200_comparison_skips_dense_shape_covariance(monkeypatch):
 
 def test_rebin_alignment_accepts_roundoff_but_rejects_splits_and_wider_ranges():
     values = np.array([1., 2., 3., 4., 5.])
-    histogram = ab.Hist1D(values[1:-1], [-3., -1., 1., 3.], errors=[1., 1., 1.])
-    loaded = ab.RootHistogram(histogram, values, np.ones(5), True, "TH1D", ("eta",))
+    loaded = ab.Hist1D.from_flow(values, [-3., -1., 1., 3.], np.ones(5), is_weighted=True)
     target = np.array([-3., np.nextafter(-1., 0.), 1., 3.])
-    rebinned = ab.rebin_root_histogram(loaded, (target,))
-    np.testing.assert_array_equal(rebinned.histogram.edges, target)
-    np.testing.assert_array_equal(rebinned.values_with_flow, values)
+    rebinned = ab.rebin(loaded, edges=target)
+    np.testing.assert_array_equal(rebinned.edges, target)
+    np.testing.assert_array_equal(rebinned.values(flow=True), values)
     for edges in ([-3., 0., 3.], [-4., 3.], [-3., 4.]):
         with pytest.raises(ValueError, match="align"):
-            ab.rebin_root_histogram(loaded, (edges,))
+            ab.rebin(loaded, edges=edges)
 
     # Observed eta-axis cancellation at the boundary immediately above zero.
     source_edges = [-5., 0., 0.05000000000000071, 0.1, 5.]
     target_edges = [-5., 0., 0.04999999999999982, 0.1, 5.]
-    eta = ab.Hist1D(np.ones(4), source_edges, errors=np.ones(4))
-    loaded = ab.RootHistogram(eta, np.ones(6), np.ones(6), True, "TH1D", ("eta",))
-    rebinned = ab.rebin_root_histogram(loaded, (target_edges,))
-    np.testing.assert_array_equal(rebinned.histogram.edges, target_edges)
-    np.testing.assert_array_equal(rebinned.values_with_flow, np.ones(6))
+    eta = ab.Hist1D.from_flow(np.ones(6), source_edges, np.ones(6), is_weighted=True)
+    rebinned = ab.rebin(eta, edges=target_edges)
+    np.testing.assert_array_equal(rebinned.edges, target_edges)
+    np.testing.assert_array_equal(rebinned.values(flow=True), np.ones(6))
 
-    offset = ab.Hist1D([2., 3.], [1e16, 1e16+4, 1e16+8], errors=[1., 1.])
-    loaded = ab.RootHistogram(offset, np.ones(4), np.ones(4), True, "TH1D", ("",))
+    offset = ab.Hist1D.from_flow(np.ones(4), [1e16, 1e16+4, 1e16+8], np.ones(4), is_weighted=True)
     with pytest.raises(ValueError, match="align"):
-        ab.rebin_root_histogram(loaded, ([1e16, 1e16+6, 1e16+8],))
+        ab.rebin(offset, edges=[1e16, 1e16+6, 1e16+8])
 
-    density = ab.divide_by_bin_width(histogram)
-    loaded = ab.RootHistogram(density, values, np.ones(5), True, "TH1D", ("eta",))
-    with pytest.raises(ValueError, match="raw counts"):
-        ab.rebin_root_histogram(loaded, (histogram.edges,))
+    # A density merges through its raw yields, as raw counts would.
+    density = ab.rebin(ab.divide_by_bin_width(loaded), edges=[-3., 1., 3.])
+    via_raw = ab.divide_by_bin_width(ab.rebin(loaded, edges=[-3., 1., 3.]))
+    np.testing.assert_allclose(density.values(flow=True), via_raw.values(flow=True), rtol=1e-15)
+    np.testing.assert_allclose(density.variances(flow=True), via_raw.variances(flow=True), rtol=1e-15)
 
 
 def _argmin_edge_match(original, target):
@@ -512,30 +504,26 @@ def test_rebin_2d_conserves_flows_keeps_inputs_and_rejects_misalignment():
     rng = np.random.default_rng(7)
     values = rng.normal(2.0, 3.0, size=(5, 6))  # signed weighted contents
     variances = rng.uniform(0.1, 4.0, size=(5, 6))
-    histogram = ab.Hist2D(values[1:-1, 1:-1], x_edges, y_edges,
-                          errors=np.sqrt(variances[1:-1, 1:-1]))
-    loaded = ab.RootHistogram(histogram, values.copy(), variances.copy(), True,
-                              "TH2D", ("x", "y"))
+    loaded = ab.Hist2D.from_flow(values.copy(), x_edges, y_edges, variances.copy())
 
-    rebinned = ab.rebin_root_histogram(loaded, ([1.0, 4.0], [-1.0, 2.0]))
+    rebinned = ab.rebin(loaded, edges=([1.0, 4.0], [-1.0, 2.0]))
     # x bins [0, 1) and y bins [-3, -1), [2, 5) move into the flows.
-    assert rebinned.values_with_flow.shape == (3, 3)
-    assert rebinned.values_with_flow.sum() == pytest.approx(values.sum(), rel=1e-12)
-    assert rebinned.variances_with_flow.sum() == pytest.approx(variances.sum(), rel=1e-12)
-    np.testing.assert_allclose(rebinned.histogram.counts, [[values[2:4, 2:4].sum()]], rtol=1e-12)
-    np.testing.assert_allclose(rebinned.values_with_flow[0, 0],
-                               values[:2, :2].sum(), rtol=1e-12)
-    np.testing.assert_allclose(rebinned.variances_with_flow[2, 2],
+    assert rebinned.values(flow=True).shape == (3, 3)
+    assert rebinned.values(flow=True).sum() == pytest.approx(values.sum(), rel=1e-12)
+    assert rebinned.variances(flow=True).sum() == pytest.approx(variances.sum(), rel=1e-12)
+    np.testing.assert_allclose(rebinned.counts, [[values[2:4, 2:4].sum()]], rtol=1e-12)
+    np.testing.assert_allclose(rebinned.values(flow=True)[0, 0], values[:2, :2].sum(), rtol=1e-12)
+    np.testing.assert_allclose(rebinned.variances(flow=True)[2, 2],
                                variances[4:, 4:].sum(), rtol=1e-12)
-    np.testing.assert_array_equal(loaded.values_with_flow, values)
-    np.testing.assert_array_equal(loaded.variances_with_flow, variances)
-    np.testing.assert_array_equal(loaded.histogram.x_edges, x_edges)
-    np.testing.assert_array_equal(loaded.histogram.y_edges, y_edges)
+    np.testing.assert_array_equal(loaded.values(flow=True), values)
+    np.testing.assert_array_equal(loaded.variances(flow=True), variances)
+    np.testing.assert_array_equal(loaded.x_edges, x_edges)
+    np.testing.assert_array_equal(loaded.y_edges, y_edges)
 
     for target in (([0.0, 1.5, 4.0], y_edges), (x_edges, [-3.0, 0.5, 5.0]),
                    ([-1.0, 4.0], y_edges), (x_edges, [-3.0, 6.0])):
         with pytest.raises(ValueError, match="align"):
-            ab.rebin_root_histogram(loaded, target)
+            ab.rebin(loaded, edges=target)
 
 
 def test_two_bin_shape_covariance_and_chi2_have_hand_calculated_values():

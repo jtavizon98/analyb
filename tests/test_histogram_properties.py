@@ -3,11 +3,12 @@
 Each test states an invariant that must hold for every valid histogram:
 merging bins or summing histograms moves yield between bins but never
 creates or loses counts, stored variances or flow content. Expected bins are
-computed independently, group by group, from the input arrays.
+computed independently, group by group, from the input arrays; bins outside a
+narrower target range go to the flows with their variances.
 
 Variances add as stored per-bin variances, which assumes uncorrelated bins.
 For densities the conserved quantities are the raw yields counts × width and
-variances (error × width)²; flows are raw yields with no stored variance.
+variances (error × width)²; flows are raw yields with their own variances.
 Each output value may differ from its expected sum by float roundoff
 proportional to the absolute terms of that same sum, never by a scale
 borrowed from another bin or quantity. Inputs are normal floats (no
@@ -50,6 +51,8 @@ def hist1d(draw, nbins=None, edges=None):
         errors=draw(st.lists(sigmas, min_size=n, max_size=n)),
         underflow=draw(values),
         overflow=draw(values),
+        underflow_error=draw(sigmas),
+        overflow_error=draw(sigmas),
         is_weighted=draw(st.booleans()),
         label="x",
         unit="GeV",
@@ -63,9 +66,16 @@ def raw_yields(hist):
 
 
 def assert_merged(merged, hist, cuts):
-    """`merged` must be `hist` merged at bin indices `cuts` (first 0, last nbins)."""
+    """`merged` must be `hist` merged at bin indices `cuts`; bins below
+    cuts[0] join the underflow and bins from cuts[-1] on join the overflow."""
     groups = list(zip(cuts[:-1], cuts[1:]))
     yields, variances = raw_yields(hist)
+    low, high = slice(0, cuts[0]), slice(cuts[-1], None)
+    flows = [hist.underflow + sum(yields[low]), hist.overflow + sum(yields[high])]
+    flow_scale = [abs(hist.underflow) + sum(abs(yields[low])),
+                  abs(hist.overflow) + sum(abs(yields[high]))]
+    flow_var = [hist.underflow_error ** 2 + sum(variances[low]),
+                hist.overflow_error ** 2 + sum(variances[high])]
     np.testing.assert_array_equal(merged.edges, hist.edges[cuts])
     assert (merged.is_density, merged.is_weighted) == (hist.is_density, hist.is_weighted)
     assert (merged.label, merged.unit) == (hist.label, hist.unit)
@@ -74,9 +84,22 @@ def assert_merged(merged, hist, cuts):
                 [sum(abs(yields[a:b])) for a, b in groups])
     assert_sums(m_variances, [sum(variances[a:b]) for a, b in groups],
                 [sum(variances[a:b]) for a, b in groups])
-    assert_sums(np.sum(m_yields), np.sum(yields), np.sum(np.abs(yields)))
-    assert_sums(np.sum(m_variances), np.sum(variances), np.sum(variances))
-    assert (merged.underflow, merged.overflow) == (hist.underflow, hist.overflow)
+    assert_sums([merged.underflow, merged.overflow], flows, flow_scale)
+    assert_sums([merged.underflow_error ** 2, merged.overflow_error ** 2], flow_var, flow_var)
+    assert_sums(merged.underflow + merged.overflow + np.sum(m_yields),
+                hist.underflow + hist.overflow + np.sum(yields),
+                abs(hist.underflow) + abs(hist.overflow) + np.sum(np.abs(yields)))
+
+
+@given(hist1d())
+def test_constructed_errors_come_back_exactly(hist):
+    """Variances are stored; sqrt(e * e) == e for every e whose square is a
+    normal float, so the given errors are what the histogram reports."""
+    representable = (hist.errors == 0) | (hist.errors > 1e-150)
+    errors = np.sqrt(hist.variances())
+    assert np.array_equal(hist.errors[representable], errors[representable])
+    assert np.array_equal(ab.Hist1D(hist.counts, hist.edges, errors=hist.errors).errors[representable],
+                          hist.errors[representable])
 
 
 @st.composite
@@ -123,11 +146,10 @@ def test_rebin_rejects_a_factor_that_would_drop_bins(case, density):
 
 @given(hist1d(), st.booleans(), st.data())
 def test_rebin_to_edges_merges_each_group_and_conserves_totals(hist, density, data):
+    """Any subset of the source edges, narrower ranges included."""
     hist = ab.divide_by_bin_width(hist) if density else hist
-    interior = list(range(1, hist.nbins))
-    kept = data.draw(st.lists(st.sampled_from(interior), unique=True) if interior else st.just([]))
-    cuts = [0, *sorted(kept), hist.nbins]
-    assert_merged(ab.rebin_to_edges(hist, hist.edges[cuts]), hist, cuts)
+    cuts = sorted(data.draw(st.lists(st.integers(0, hist.nbins), min_size=2, unique=True)))
+    assert_merged(ab.rebin(hist, edges=hist.edges[cuts]), hist, cuts)
 
 
 @st.composite
@@ -147,6 +169,7 @@ def test_sum_histograms_adds_everything_in_any_order(hists, rng):
     counts = np.array([h.counts for h in hists])
     err2 = np.array([h.errors ** 2 for h in hists])
     flows = np.array([[h.underflow, h.overflow] for h in hists])
+    flow_err2 = np.array([[h.underflow_error ** 2, h.overflow_error ** 2] for h in hists])
     added = hists[0]
     for h in hists[1:]:
         added = added + h
@@ -156,6 +179,8 @@ def test_sum_histograms_adds_everything_in_any_order(hists, rng):
         assert_sums(total.counts, counts.sum(axis=0), np.abs(counts).sum(axis=0))
         assert_sums(total.errors ** 2, err2.sum(axis=0), err2.sum(axis=0))
         assert_sums([total.underflow, total.overflow], flows.sum(axis=0), np.abs(flows).sum(axis=0))
+        assert_sums([total.underflow_error ** 2, total.overflow_error ** 2],
+                    flow_err2.sum(axis=0), flow_err2.sum(axis=0))
 
 
 @given(hist1d(), st.floats(1e-6, 1.0))

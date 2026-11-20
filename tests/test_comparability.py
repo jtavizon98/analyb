@@ -96,22 +96,6 @@ def test_require_comparable_state_type_and_finiteness():
         ab.require_comparable(_hist(edges), _hist(edges), edges="close")
 
 
-def test_hist2d_counts_must_fit_their_grid():
-    h = ab.Hist2D(np.ones((2, 3)), [0.0, 1.0, 2.0], [0.0, 1.0, 2.0, 3.0], errors=np.ones((2, 3)))
-    transposed = ab.Hist2D(np.ones((3, 2)), [0.0, 1.0, 2.0], [0.0, 1.0, 2.0, 3.0],
-                           errors=np.ones((3, 2)))
-    with pytest.raises(ValueError, match="bins of their edges"):
-        ab.require_comparable(h, transposed, edges="exact")
-
-
-def test_errors_reassigned_after_construction_are_caught():
-    edges = [0.0, 1.0, 2.0]
-    h = _hist(edges)
-    h.errors = np.array([0.1])
-    with pytest.raises(ValueError, match="errors must match"):
-        ab.require_comparable(_hist(edges), h, edges="roundoff")
-
-
 def test_ratio_and_pairwise_comparison_agree_bin_by_bin():
     """Both public ratios go through one quotient, including negative and zero bins."""
     edges = [0.0, 1.0, 2.0, 3.0, 4.0]
@@ -124,9 +108,18 @@ def test_ratio_and_pairwise_comparison_agree_bin_by_bin():
     np.testing.assert_array_equal(comparison.ratio_valid, [True, True, False, True])
 
 
-def test_hist1d_counts_must_fit_their_edges():
+def test_counts_and_errors_cannot_be_given_or_assigned_off_their_grid():
+    """The histogram owns its shape: no comparison can meet a mismatched one."""
+    with pytest.raises(ValueError, match="shape"):
+        ab.Hist2D(np.ones((3, 2)), [0.0, 1.0, 2.0], [0.0, 1.0, 2.0, 3.0])
+    with pytest.raises(ValueError, match="len\(counts\) \+ 1"):
+        ab.Hist1D(np.ones(2), [0.0, 1.0, 2.0, 3.0])
     h = _hist([0.0, 1.0, 2.0, 3.0])
-    h.counts = np.ones(2)
-    h.errors = np.ones(2)
-    with pytest.raises(ValueError, match="bins of their edges"):
-        ab.require_comparable(_hist([0.0, 1.0, 2.0, 3.0]), h, edges="exact")
+    for attribute in ("counts", "errors"):
+        with pytest.raises(ValueError, match="shape"):
+            setattr(h, attribute, np.ones(2))
+    with pytest.raises(AttributeError):
+        h.edges = np.array([0.0, 1.0])
+    g = ab.Hist2D(np.ones((2, 3)), [0.0, 1.0, 2.0], [0.0, 1.0, 2.0, 3.0])
+    with pytest.raises(ValueError, match="shape"):
+        g.errors = np.ones((3, 2))

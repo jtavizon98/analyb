@@ -65,12 +65,12 @@ imports, internal call structure, or other incidental implementation choices.
 | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | `binning.py`           | Scott, Sturges, Freedman-Diaconis rules                                                                                       |
 | `colors.py`            | Catppuccin palette, custom colormaps                                                                                          |
-| `comparison.py`        | Noncanonical whole-bin artifact aggregation, pairwise diagnostics, overlays, response differences, and plotbooks              |
+| `comparison.py`        | Noncanonical pairwise artifact diagnostics, overlays, response differences, and plotbooks                                     |
 | `config.py`            | Script ID, data/save paths, weight column                                                                                     |
 | `cutflow.py`           | Caller-supplied cutflow data, nested weighted efficiency variance, charting, aligned cutflow comparison                       |
 | `figcheck.py`          | Render-time figure lint: clipped, overlapping, data-covering and undersized text; optional save hook with JSON sidecar |
-| `histogram.py`         | Hist1D/Hist2D, fill, rebin, normalize, profile; the one owner of grid comparability and bin-by-bin quotients          |
-| `io.py`                | TTree loading, flow-aware external TH1/TH2 loading, and typed histogram-record ROOT persistence                               |
+| `histogram.py`         | Hist1D/Hist2D with flow bins, fill, rebin, normalize, profile; the one owner of grid comparability and bin-by-bin quotients |
+| `io.py`                | TTree loading, one TH1/TH2 loader with flows and fSumw2, native TH1D/TH2D writer, histogram cache                             |
 | `makelatex.py`         | LaTeX auto-generation for figure environments; compact plotbook with optional page map JSON                                   |
 | `parallel.py`          | Forked fill/replot workers with parent-owned typed ROOT persistence                                                            |
 | `plot.py`              | 1D/2D plots, ratio panels, stacked, fits, ATLAS label, final annotation headroom                                            |

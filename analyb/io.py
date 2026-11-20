@@ -286,6 +286,8 @@ class Hist1DRecord:
     overflow: float = 0.0
     underflow: float = 0.0
     is_density: bool = False
+    underflow_error: Optional[float] = None
+    overflow_error: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -296,6 +298,8 @@ class Hist2DRecord:
     errors: object = None
     x_unit: Optional[str] = None
     y_unit: Optional[str] = None
+    values_with_flow: object = None
+    variances_with_flow: object = None
 
 
 @dataclass(frozen=True)
@@ -313,31 +317,86 @@ class CompareRecord:
     data: Optional[Hist1DRecord] = None
 
 
-@dataclass(frozen=True)
-class RootHistogram:
-    """A ROOT TH1/TH2 and its flow-inclusive source arrays."""
-
-    histogram: object
-    values_with_flow: object
-    variances_with_flow: object
-    has_stored_variances: bool
-    classname: str
-    axis_titles: tuple
-
-
 def hist1d_record(hist):
-    """Return the explicit persistence record for a Hist1D."""
+    """Return the explicit persistence record for a Hist1D, flows included."""
     return Hist1DRecord(
         hist.counts, hist.edges, hist.errors, hist.unit,
         hist.overflow, hist.underflow, hist.is_density,
+        hist.underflow_error, hist.overflow_error,
     )
 
 
 def hist2d_record(hist):
-    """Return the explicit persistence record for a Hist2D."""
+    """Return the explicit persistence record for a Hist2D, flows included."""
     return Hist2DRecord(
         hist.counts, hist.x_edges, hist.y_edges, hist.errors,
         hist.x_unit, hist.y_unit,
+        hist.values(flow=True), hist.variances(flow=True),
+    )
+
+
+def _record_histogram(record):
+    """The Hist1D/Hist2D a record describes."""
+    from .histogram import Hist1D, Hist2D
+
+    if isinstance(record, Hist1DRecord):
+        return Hist1D(
+            record.counts, record.edges, record.errors, unit=record.unit,
+            overflow=record.overflow, underflow=record.underflow,
+            overflow_error=record.overflow_error, underflow_error=record.underflow_error,
+            is_weighted=record.errors is not None, is_density=record.is_density,
+        )
+    if record.values_with_flow is not None:
+        return Hist2D.from_flow(
+            record.values_with_flow, record.x_edges, record.y_edges,
+            record.variances_with_flow, x_unit=record.x_unit, y_unit=record.y_unit,
+        )
+    return Hist2D(
+        record.counts, record.x_edges, record.y_edges, record.errors,
+        x_unit=record.x_unit, y_unit=record.y_unit,
+    )
+
+
+def _axis(name, edges):
+    from uproot.writing.identify import to_TAxis
+
+    # Explicit edges round-trip exactly, uniform or not.
+    return to_TAxis(name, "", edges.size - 1, float(edges[0]), float(edges[-1]), fXbins=edges)
+
+
+def _write_native(root_file, name, hist, has_sumw2):
+    """Write a Hist1D/Hist2D as a ROOT TH1D/TH2D with flow bins and fSumw2.
+
+    Without ``has_sumw2`` no fSumw2 is stored, which ROOT and uproot read as
+    unweighted (variance = value).
+    """
+    from uproot.writing.identify import to_TH1x, to_TH2x
+    from .histogram import Hist2D
+
+    values = hist.values(flow=True)
+    sumw2 = hist.variances(flow=True)
+    interior = hist.counts
+    interior_w2 = hist.errors ** 2 if has_sumw2 else interior
+    stored_sumw2 = sumw2.ravel(order="F") if has_sumw2 else np.array([], dtype=np.float64)
+    title = name.rsplit("/", 1)[-1]
+    if isinstance(hist, Hist2D):
+        cx = (hist.x_edges[:-1] + hist.x_edges[1:]) / 2
+        cy = (hist.y_edges[:-1] + hist.y_edges[1:]) / 2
+        wx, wy = interior.sum(axis=1), interior.sum(axis=0)
+        root_file[name] = to_TH2x(
+            title, "", values.ravel(order="F"), float(values.sum()),
+            float(interior.sum()), float(interior_w2.sum()),
+            float(wx @ cx), float(wx @ cx ** 2), float(wy @ cy), float(wy @ cy ** 2),
+            float(cx @ interior @ cy), stored_sumw2,
+            _axis("xaxis", hist.x_edges), _axis("yaxis", hist.y_edges),
+        )
+        return
+    centers = hist.centers
+    root_file[name] = to_TH1x(
+        title, "", values, float(values.sum()),
+        float(interior.sum()), float(interior_w2.sum()),
+        float(interior @ centers), float(interior @ centers ** 2),
+        stored_sumw2, _axis("xaxis", hist.edges),
     )
 
 
@@ -355,31 +414,17 @@ def _profile_edges(centers):
 
 
 def write_histogram_record(root_file, name, record):
-    """Write one typed histogram record to an open ROOT file."""
-    if isinstance(record, Hist1DRecord):
-        counts = np.asarray(record.counts, dtype=np.float64)
-        edges = np.asarray(record.edges, dtype=np.float64)
-        root_file[name] = counts, edges
-        if record.errors is not None:
-            errors = np.asarray(record.errors, dtype=np.float64)
-            root_file[f"{name}__sumw2"] = errors**2, edges
-        _write_sidecar_presence(root_file, name, "sumw2", record.errors is not None)
-        root_file[f"{name}__flow"] = (
-            np.asarray([record.underflow, record.overflow], dtype=np.float64),
-            np.asarray([0.0, 1.0, 2.0]),
-        )
-        _write_density_metadata(root_file, name, record.is_density)
-        return
+    """Write one typed histogram record to an open ROOT file.
 
-    if isinstance(record, Hist2DRecord):
-        counts = np.asarray(record.counts, dtype=np.float64)
-        x_edges = np.asarray(record.x_edges, dtype=np.float64)
-        y_edges = np.asarray(record.y_edges, dtype=np.float64)
-        root_file[name] = counts, x_edges, y_edges
-        if record.errors is not None:
-            errors = np.asarray(record.errors, dtype=np.float64)
-            root_file[f"{name}__sumw2"] = errors**2, x_edges, y_edges
-        _write_sidecar_presence(root_file, name, "sumw2", record.errors is not None)
+    Hist1D and Hist2D records become ordinary ROOT TH1D/TH2D objects with
+    their flow bins and, when the record has errors, fSumw2; ``load_histogram``
+    reads them back exactly. A density marker key records Hist1D
+    differential normalization, which ROOT has no field for.
+    """
+    if isinstance(record, (Hist1DRecord, Hist2DRecord)):
+        _write_native(root_file, name, _record_histogram(record), record.errors is not None)
+        if isinstance(record, Hist1DRecord):
+            _write_density_metadata(root_file, name, record.is_density)
         return
 
     if isinstance(record, ProfileRecord):
@@ -389,7 +434,6 @@ def write_histogram_record(root_file, name, record):
             root_file[f"{name}__stderr"] = (
                 np.asarray(record.stderr, dtype=np.float64), edges,
             )
-        _write_sidecar_presence(root_file, name, "sumw2", False)
         _write_sidecar_presence(root_file, name, "stderr", record.stderr is not None)
         return
 
@@ -417,161 +461,87 @@ def save_histogram_record(name, record, file=None, mode="update"):
 
 def save_hist_to_root(name, hist, file=None, mode="update"):
     """Save a 1D histogram (Hist1D or (counts, edges) tuple) into a ROOT file."""
-    _require_uproot()
-    from . import config
     from .histogram import Hist1D
 
-    if file is None:
-        file = config.get_output_root()
-    os.makedirs(os.path.dirname(file) or ".", exist_ok=True)
     if isinstance(hist, Hist1D):
         record = hist1d_record(hist)
     else:
         counts, edges = hist
         record = Hist1DRecord(counts, edges)
-    with _rootsavebook(file, mode) as f:
-        write_histogram_record(f, name, record)
+    save_histogram_record(name, record, file=file, mode=mode)
 
 
 def save_hist2d_to_root(name, hist, file=None, mode="update"):
     """Save a 2D histogram (Hist2D or (counts, x_edges, y_edges)) into a ROOT file."""
-    _require_uproot()
-    from . import config
     from .histogram import Hist2D
 
-    if file is None:
-        file = config.get_output_root()
-    os.makedirs(os.path.dirname(file) or ".", exist_ok=True)
     if isinstance(hist, Hist2D):
         record = hist2d_record(hist)
     else:
         counts, xe, ye = hist
         record = Hist2DRecord(counts, xe, ye)
-    with _rootsavebook(file, mode) as f:
-        write_histogram_record(f, name, record)
+    save_histogram_record(name, record, file=file, mode=mode)
 
 
-def load_hist_from_root(file, name):
-    """Load a 1D or 2D histogram from a ROOT file into Hist1D / Hist2D."""
-    _require_uproot()
+def _read_histogram(root_file, name, require_variances):
+    """Read one TH1/TH2 from an open file into Hist1D/Hist2D, flows included."""
     from .histogram import Hist1D, Hist2D
 
-    with uproot.open(file) as f:
-        obj = f[name]
-        arrays = obj.to_numpy()
-        is_density = _read_density_metadata(f, name)
-        sumw2 = (
-            f[f"{name}__sumw2"].to_numpy()[0]
-            if _sidecar_is_current(f, name, "sumw2") else None
+    obj = root_file[name]
+    classname = obj.classname
+    if not (classname.startswith("TH1") or classname.startswith("TH2")):
+        raise TypeError(f"{name!r} is {classname}, expected a ROOT TH1 or TH2")
+    values = np.asarray(obj.values(flow=True), dtype=np.float64)
+    has_stored_variances = np.asarray(obj.member("fSumw2")).size == values.size
+    # The pre-flow writer stored every histogram without fSumw2 and kept sumw2
+    # and flows in sidecars; reading only the main key would lose both.
+    if not has_stored_variances and (
+            f"{name}__sumw2" in root_file or f"{name}__flow" in root_file):
+        raise ValueError(
+            f"{name!r} keeps sumw2 or flows in sidecar keys: written by analyb "
+            "before flow-carrying histograms; rewrite the file with the current analyb"
         )
-        flow = f[f"{name}__flow"].to_numpy()[0] if f"{name}__flow" in f else None
-    if len(arrays) == 2:
-        counts, edges = arrays
-        errors = np.sqrt(np.maximum(sumw2, 0)) if sumw2 is not None else None
-        underflow, overflow = flow if flow is not None else (0.0, 0.0)
-        return Hist1D(
-            counts=counts, edges=edges, errors=errors,
-            underflow=underflow, overflow=overflow,
-            is_weighted=sumw2 is not None, is_density=is_density,
+    if require_variances and not has_stored_variances:
+        raise ValueError(f"{name!r} has no stored variances (fSumw2)")
+    variances = obj.variances(flow=True)
+    if variances is None:
+        raise ValueError(f"{name!r} has no recoverable variances")
+    variances = np.asarray(variances, dtype=np.float64)
+    if variances.shape != values.shape:
+        raise ValueError(
+            f"{name!r} variance shape {variances.shape} does not match value shape {values.shape}"
         )
-    counts, x_edges, y_edges = arrays
-    if counts.shape != (len(x_edges) - 1, len(y_edges) - 1):
-        counts = counts.T
-    if sumw2 is not None and sumw2.shape != counts.shape:
-        sumw2 = sumw2.T
-    errors = np.sqrt(np.maximum(sumw2, 0)) if sumw2 is not None else None
-    return Hist2D(
-        counts=counts, x_edges=x_edges, y_edges=y_edges, errors=errors,
+    if np.any(~np.isfinite(variances)) or np.any(variances < 0):
+        raise ValueError(f"{name!r} has invalid variances")
+    axes = tuple(obj.axes)
+    edges = tuple(np.asarray(axis.edges(), dtype=np.float64) for axis in axes)
+    titles = tuple(str(axis.member("fTitle")) or None for axis in axes)
+    expected = tuple(len(axis) + 1 for axis in edges)
+    if values.shape != expected:
+        raise ValueError(
+            f"{name!r} flow-inclusive shape {values.shape} does not match axis shape {expected}"
+        )
+    if classname.startswith("TH2"):
+        return Hist2D.from_flow(values, edges[0], edges[1], variances,
+                                x_label=titles[0], y_label=titles[1])
+    return Hist1D.from_flow(
+        values, edges[0], variances, is_weighted=has_stored_variances, label=titles[0],
+        is_density=_read_density_metadata(root_file, name),
     )
 
 
-def load_root_histogram(file, name, *, require_variances=True):
-    """Load an external ROOT TH1/TH2 without discarding flow bins or sumw2.
+def load_histogram(file, name, *, require_variances=True):
+    """Load a ROOT TH1/TH2 into a Hist1D/Hist2D with its flow bins and errors.
 
-    The returned :class:`RootHistogram` contains an analyb histogram for the
-    displayed bins and exact flow-inclusive source arrays.  ``fSumw2`` must be
-    present by default so weighted uncertainties cannot silently degrade to
-    ``sqrt(counts)``.  Set ``require_variances=False`` only for a known
-    unweighted input.
+    The one reader for external files and for files analyb wrote. ``fSumw2``
+    must be present by default so weighted uncertainties cannot silently
+    degrade to ``sqrt(counts)``; set ``require_variances=False`` only for a
+    known unweighted input. Flow bins and their variances are kept:
+    ``values(flow=True)`` and ``variances(flow=True)`` return them.
     """
     _require_uproot()
-    from .histogram import Hist1D, Hist2D
-
     with uproot.open(file) as root_file:
-        obj = root_file[name]
-        classname = obj.classname
-        if not (classname.startswith("TH1") or classname.startswith("TH2")):
-            raise TypeError(
-                f"{name!r} is {classname}, expected a ROOT TH1 or TH2"
-            )
-
-        values = np.asarray(obj.values(flow=True), dtype=np.float64)
-        stored_sumw2 = np.asarray(obj.member("fSumw2"), dtype=np.float64)
-        has_stored_variances = stored_sumw2.size == values.size
-        if require_variances and not has_stored_variances:
-            raise ValueError(f"{name!r} has no stored variances (fSumw2)")
-
-        variances = obj.variances(flow=True)
-        if variances is None:
-            raise ValueError(f"{name!r} has no recoverable variances")
-        variances = np.asarray(variances, dtype=np.float64)
-        if variances.shape != values.shape:
-            raise ValueError(
-                f"{name!r} variance shape {variances.shape} does not match "
-                f"value shape {values.shape}"
-            )
-        if np.any(~np.isfinite(variances)) or np.any(variances < 0):
-            raise ValueError(f"{name!r} has invalid variances")
-
-        axes = tuple(obj.axes)
-        edges = tuple(np.asarray(axis.edges(), dtype=np.float64) for axis in axes)
-        axis_titles = tuple(str(axis.member("fTitle")) for axis in axes)
-
-    errors = np.sqrt(variances)
-    if classname.startswith("TH2"):
-        if values.ndim != 2 or len(edges) != 2:
-            raise ValueError(f"{name!r} has invalid TH2 dimensionality")
-        expected = (len(edges[0]) + 1, len(edges[1]) + 1)
-        if values.shape != expected:
-            raise ValueError(
-                f"{name!r} flow-inclusive shape {values.shape} does not match "
-                f"axis shape {expected}"
-            )
-        histogram = Hist2D(
-            counts=values[1:-1, 1:-1],
-            x_edges=edges[0],
-            y_edges=edges[1],
-            errors=errors[1:-1, 1:-1],
-            x_label=axis_titles[0] or None,
-            y_label=axis_titles[1] or None,
-        )
-    else:
-        if values.ndim != 1 or len(edges) != 1:
-            raise ValueError(f"{name!r} has invalid TH1 dimensionality")
-        expected = len(edges[0]) + 1
-        if values.size != expected:
-            raise ValueError(
-                f"{name!r} flow-inclusive length {values.size} does not match "
-                f"axis length {expected}"
-            )
-        histogram = Hist1D(
-            counts=values[1:-1],
-            edges=edges[0],
-            errors=errors[1:-1],
-            underflow=values[0],
-            overflow=values[-1],
-            is_weighted=has_stored_variances,
-            label=axis_titles[0] or None,
-        )
-
-    return RootHistogram(
-        histogram=histogram,
-        values_with_flow=values,
-        variances_with_flow=variances,
-        has_stored_variances=has_stored_variances,
-        classname=classname,
-        axis_titles=axis_titles,
-    )
+        return _read_histogram(root_file, name, require_variances)
 
 
 # --------------------------------------------------------------------------
@@ -664,113 +634,34 @@ def load_histogram_cache(file=None):
         raise FileNotFoundError(f"Cache file not found: {cache_path}")
 
     with uproot.open(cache_path) as f:
-        for raw_key in f:
+        for raw_key, classname in f.classnames().items():
             key = raw_key.rsplit(";", 1)[0]
-            if key.endswith((
-                "__stderr", "__sumw2", "__flow", "__analyb_density",
-                "__analyb_sumw2_present", "__analyb_stderr_present",
-            )):
+            if key.endswith(("__stderr", "__analyb_density", "__analyb_stderr_present")):
                 continue
-            obj = f[raw_key]
-            if not hasattr(obj, "to_numpy"):
+            if not (classname.startswith("TH1") or classname.startswith("TH2")):
                 continue
-            arrays = obj.to_numpy()
-
-            # Check if this is a compare key
             if key.startswith("compare/"):
                 parts = key.split("/")
                 if len(parts) >= 3:
-                    var = parts[1]
-                    if var not in result["compare"]:
-                        result["compare"][var] = {"mc": {}, "data": None}
-                    if len(arrays) != 2:
-                        continue
-                    counts, edges = arrays
-                    sumw2_key = f"{key}__sumw2"
-                    errors = None
-                    is_weighted = False
-                    if _sidecar_is_current(f, key, "sumw2"):
-                        sumw2, _ = f[sumw2_key].to_numpy()
-                        errors = np.sqrt(np.maximum(sumw2, 0))
-                        is_weighted = True
-                    underflow = overflow = 0.0
-                    flow_key = f"{key}__flow"
-                    if flow_key in f:
-                        flow, _ = f[flow_key].to_numpy()
-                        underflow, overflow = flow
-                    h = Hist1D(
-                        counts=counts,
-                        edges=edges,
-                        errors=errors,
-                        underflow=underflow,
-                        overflow=overflow,
-                        is_weighted=is_weighted,
-                        is_density=_read_density_metadata(f, key),
-                    )
+                    entry = result["compare"].setdefault(parts[1], {"mc": {}, "data": None})
+                    histogram = _read_histogram(f, key, require_variances=False)
                     if len(parts) >= 4 and parts[2] == "mc":
-                        sample_name = parts[3]
-                        result["compare"][var]["mc"][sample_name] = h
+                        entry["mc"][parts[3]] = histogram
                     elif parts[2] == "data":
-                        result["compare"][var]["data"] = h
+                        entry["data"] = histogram
                 continue
-
-            # Check if profile key
             if key.startswith("prof_") or "_prof_" in key:
-                if len(arrays) != 2:
-                    continue
-                counts, edges = arrays
-                centers = (edges[:-1] + edges[1:]) / 2
+                means, edges = f[raw_key].to_numpy()
                 stderr = None
-                stderr_key = f"{key}__stderr"
                 if _sidecar_is_current(f, key, "stderr"):
-                    stderr, _ = f[stderr_key].to_numpy()
-                result["profiles"][key] = (centers, counts, stderr)
+                    stderr, _ = f[f"{key}__stderr"].to_numpy()
+                result["profiles"][key] = ((edges[:-1] + edges[1:]) / 2, means, stderr)
                 continue
-
-            # Check if 2D key
+            histogram = _read_histogram(f, key, require_variances=False)
             if key.startswith("2d_"):
-                if len(arrays) == 3:
-                    counts, x_edges, y_edges = arrays
-                    if counts.shape != (len(x_edges) - 1, len(y_edges) - 1):
-                        counts = counts.T
-                    errors = None
-                    sumw2_key = f"{key}__sumw2"
-                    if _sidecar_is_current(f, key, "sumw2"):
-                        sumw2, _, _ = f[sumw2_key].to_numpy()
-                        if sumw2.shape != counts.shape:
-                            sumw2 = sumw2.T
-                        errors = np.sqrt(np.maximum(sumw2, 0))
-                    h2 = Hist2D(
-                        counts=counts, x_edges=x_edges, y_edges=y_edges,
-                        errors=errors,
-                    )
-                    result["hist2d"][key] = h2
-                continue
-
-            # Default: 1D histogram
-            if len(arrays) == 2:
-                counts, edges = arrays
-                sumw2_key = f"{key}__sumw2"
-                errors = None
-                is_weighted = False
-                if _sidecar_is_current(f, key, "sumw2"):
-                    sumw2, _ = f[sumw2_key].to_numpy()
-                    errors = np.sqrt(np.maximum(sumw2, 0))
-                    is_weighted = True
-                underflow = overflow = 0.0
-                flow_key = f"{key}__flow"
-                if flow_key in f:
-                    flow, _ = f[flow_key].to_numpy()
-                    underflow, overflow = flow
-                result["hist1d"][key] = Hist1D(
-                    counts=counts,
-                    edges=edges,
-                    errors=errors,
-                    underflow=underflow,
-                    overflow=overflow,
-                    is_weighted=is_weighted,
-                    is_density=_read_density_metadata(f, key),
-                )
+                result["hist2d"][key] = histogram
+            else:
+                result["hist1d"][key] = histogram
 
     logger = logging.getLogger(__name__)
     logger.info("Loaded histogram cache: %s", cache_path)

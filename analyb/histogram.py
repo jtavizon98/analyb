@@ -8,8 +8,95 @@ from scipy import stats
 from .binning import resolve_bins, _data_range
 
 
-class Hist1D:
-    """1D histogram with counts, edges, errors, optional overflow/underflow."""
+def _flow_error(flow, error, is_weighted, name):
+    """Error of one 1D flow bin: given, or sqrt(count) for unweighted entries."""
+    if error is not None:
+        return float(error)
+    if flow == 0:
+        return 0.0
+    if is_weighted:
+        raise ValueError(
+            f"a weighted Hist1D with a nonzero {name} needs {name}_error; "
+            "flows carry their variance like every bin"
+        )
+    return float(np.sqrt(flow))
+
+
+def _validated_edges(edges, name):
+    edges = np.asarray(edges, dtype=np.float64)
+    if edges.ndim != 1 or edges.size < 1:
+        raise ValueError(f"{name} must be one-dimensional and nonempty")
+    if not np.all(np.isfinite(edges)) or np.any(np.diff(edges) <= 0):
+        raise ValueError(f"{name} must be finite and strictly increasing")
+    return edges
+
+
+def _checked_errors(errors, name):
+    errors = np.asarray(errors, dtype=np.float64)
+    if np.any(errors < 0):
+        raise ValueError(f"{name} errors must be nonnegative")
+    return errors
+
+
+class _FlowStorage:
+    """Flow-inclusive values and variances; ``counts``/``errors`` are the displayed bins.
+
+    The first and last entry of every axis are the underflow and overflow
+    bins, laid out as ROOT and uproot's ``values(flow=True)``. Variances are
+    stored, as ROOT's fSumw2 is, so file variances are summed exactly when
+    bins merge; ``errors`` is their square root. An error given to the
+    constructor comes back unchanged, since sqrt(e * e) == e in IEEE
+    arithmetic whenever e * e is a normal float (e > ~1.5e-154).
+    """
+
+    _interior = (slice(1, -1),)
+
+    @property
+    def counts(self):
+        return self._values[self._interior]
+
+    @counts.setter
+    def counts(self, value):
+        self._set_interior(self._values, value, "counts")
+
+    @property
+    def errors(self):
+        # Computed from the variances, so read-only: an element write would
+        # otherwise be lost silently. Assign a whole array instead.
+        errors = np.sqrt(self._variances[self._interior])
+        errors.flags.writeable = False
+        return errors
+
+    @errors.setter
+    def errors(self, value):
+        value = _checked_errors(value, type(self).__name__)
+        self._set_interior(self._variances, value * value, "errors")
+
+    def _set_interior(self, target, value, name):
+        value = np.asarray(value, dtype=np.float64)
+        if value.shape != target[self._interior].shape:
+            raise ValueError(
+                f"{type(self).__name__} {name} must have shape "
+                f"{target[self._interior].shape}, got {value.shape}"
+            )
+        target[self._interior] = value
+
+    def _set_variances(self, variances):
+        if np.any(variances < 0):
+            raise ValueError(f"{type(self).__name__} variances must be nonnegative")
+        self._variances[...] = variances
+
+    def values(self, flow=False):
+        """Bin values; ``flow=True`` includes underflow and overflow bins."""
+        return self._values.copy() if flow else self.counts.copy()
+
+    def variances(self, flow=False):
+        """Bin variances (squared errors); ``flow=True`` includes the flow bins."""
+        return self._variances.copy() if flow else self._variances[self._interior].copy()
+
+
+class Hist1D(_FlowStorage):
+    """1D histogram: displayed bins plus underflow and overflow, each with an error."""
 
     def __init__(
         self,
@@ -23,10 +110,12 @@ class Hist1D:
         is_weighted=False,
         bin_width=None,
         is_density=False,
+        underflow_error=None,
+        overflow_error=None,
     ):
-        self.counts = np.asarray(counts, dtype=np.float64)
-        self.edges = np.asarray(edges, dtype=np.float64)
-        if self.edges.ndim != 1 or self.edges.size != self.counts.size + 1:
+        counts = np.asarray(counts, dtype=np.float64)
+        self._edges = np.asarray(edges, dtype=np.float64)
+        if self.edges.ndim != 1 or counts.ndim != 1 or self.edges.size != counts.size + 1:
             raise ValueError("Hist1D edges must have length len(counts) + 1")
         if not np.all(np.isfinite(self.edges)) or np.any(np.diff(self.edges) <= 0):
             raise ValueError("Hist1D edges must be finite and strictly increasing")
@@ -36,20 +125,45 @@ class Hist1D:
                     "Hist1D with is_weighted=True requires explicit errors. "
                     "Use hist1d() which computes them correctly."
                 )
-            errors = np.sqrt(self.counts)
-        self.errors = np.asarray(errors, dtype=np.float64)
-        if self.errors.shape != self.counts.shape:
+            errors = np.sqrt(counts)
+        errors = _checked_errors(errors, "Hist1D")
+        if errors.shape != counts.shape:
             raise ValueError("Hist1D errors must have the same shape as counts")
+        underflow, overflow = float(underflow), float(overflow)
+        self._values = np.concatenate(([underflow], counts, [overflow]))
+        flow_errors = _checked_errors([
+            _flow_error(underflow, underflow_error, is_weighted, "underflow"),
+            _flow_error(overflow, overflow_error, is_weighted, "overflow"),
+        ], "Hist1D flow")
+        self._variances = np.concatenate(([flow_errors[0]], errors, [flow_errors[1]])) ** 2
         self.label = label
         self.unit = unit
-        self.overflow = float(overflow)
-        self.underflow = float(underflow)
         self.is_weighted = is_weighted
         self.is_density = bool(is_density)
         if bin_width is None and self.is_uniform and not self.is_density:
             bin_width = float(self.edges[1] - self.edges[0])
         self.bin_width = None if self.is_density or not self.is_uniform else bin_width
         self.n_entries = self.integral()
+
+    @classmethod
+    def from_flow(cls, values, edges, variances, **kwargs):
+        """Build from flow-inclusive arrays (underflow, bins..., overflow)."""
+        values = np.asarray(values, dtype=np.float64)
+        variances = np.asarray(variances, dtype=np.float64)
+        if values.ndim != 1 or values.size < 2 or variances.shape != values.shape:
+            raise ValueError("flow-inclusive values and variances must be 1D, same length, >= 2")
+        hist = cls(values[1:-1], edges, np.zeros(values.size - 2),
+                   underflow=values[0], overflow=values[-1],
+                   underflow_error=0.0, overflow_error=0.0, **kwargs)
+        hist._set_variances(variances)
+        return hist
+
+    underflow = property(lambda self: float(self._values[0]))
+    overflow = property(lambda self: float(self._values[-1]))
+    # Read-only, so counts and edges cannot disagree after construction.
+    edges = property(lambda self: self._edges)
+    underflow_error = property(lambda self: float(np.sqrt(self._variances[0])))
+    overflow_error = property(lambda self: float(np.sqrt(self._variances[-1])))
 
     @property
     def nbins(self):
@@ -83,17 +197,10 @@ class Hist1D:
         return float(np.sqrt(self.integral()))
 
     def copy(self):
-        return Hist1D(
-            self.counts.copy(),
-            self.edges.copy(),
-            self.errors.copy(),
-            label=self.label,
-            unit=self.unit,
-            overflow=self.overflow,
-            underflow=self.underflow,
-            is_weighted=self.is_weighted,
-            bin_width=self.bin_width,
-            is_density=self.is_density,
+        return Hist1D.from_flow(
+            self._values, self.edges.copy(), self._variances,
+            label=self.label, unit=self.unit, is_weighted=self.is_weighted,
+            bin_width=self.bin_width, is_density=self.is_density,
         )
 
     def __repr__(self):
@@ -108,8 +215,14 @@ class Hist1D:
         return sum_histograms([self, other])
 
 
-class Hist2D:
-    """2D histogram with counts, x_edges, y_edges, and optional errors."""
+class Hist2D(_FlowStorage):
+    """2D histogram: displayed bins plus flow strips and corners, each with an error.
+
+    ``values(flow=True)`` has shape ``(nx + 2, ny + 2)``, indexed ``[x, y]``.
+    The plain constructor starts with empty flows; ``from_flow`` sets them.
+    """
+
+    _interior = (slice(1, -1), slice(1, -1))
 
     def __init__(
         self,
@@ -122,18 +235,39 @@ class Hist2D:
         x_unit=None,
         y_unit=None,
     ):
-        self.counts = np.asarray(counts, dtype=np.float64)
-        self.x_edges = np.asarray(x_edges, dtype=np.float64)
-        self.y_edges = np.asarray(y_edges, dtype=np.float64)
-        if errors is None:
-            errors = np.sqrt(self.counts)
-        self.errors = np.asarray(errors, dtype=np.float64)
-        if self.errors.shape != self.counts.shape:
+        self._x_edges = _validated_edges(x_edges, "Hist2D x_edges")
+        self._y_edges = _validated_edges(y_edges, "Hist2D y_edges")
+        counts = np.asarray(counts, dtype=np.float64)
+        shape = (self.x_edges.size - 1, self.y_edges.size - 1)
+        if counts.shape != shape:
+            raise ValueError(f"Hist2D counts must have shape {shape} from its edges, got {counts.shape}")
+        errors = np.sqrt(counts) if errors is None else _checked_errors(errors, "Hist2D")
+        if errors.shape != counts.shape:
             raise ValueError("Hist2D errors must have the same shape as counts")
+        self._values = np.zeros((shape[0] + 2, shape[1] + 2))
+        self._variances = np.zeros_like(self._values)
+        self._values[self._interior] = counts
+        self._variances[self._interior] = errors * errors
         self.x_label = x_label
         self.y_label = y_label
         self.x_unit = x_unit
         self.y_unit = y_unit
+
+    # Read-only, so counts and edges cannot disagree after construction.
+    x_edges = property(lambda self: self._x_edges)
+    y_edges = property(lambda self: self._y_edges)
+
+    @classmethod
+    def from_flow(cls, values, x_edges, y_edges, variances, **kwargs):
+        """Build from flow-inclusive ``(nx + 2, ny + 2)`` values and variances."""
+        values = np.asarray(values, dtype=np.float64)
+        variances = np.asarray(variances, dtype=np.float64)
+        if values.ndim != 2 or variances.shape != values.shape:
+            raise ValueError("flow-inclusive values and variances must be 2D with one shape")
+        hist = cls(values[1:-1, 1:-1], x_edges, y_edges, np.zeros(values[1:-1, 1:-1].shape), **kwargs)
+        hist._values[...] = values
+        hist._set_variances(variances)
+        return hist
 
     @property
     def shape(self):
@@ -143,15 +277,10 @@ class Hist2D:
         return float(np.sum(self.counts))
 
     def copy(self):
-        return Hist2D(
-            self.counts.copy(),
-            self.x_edges.copy(),
-            self.y_edges.copy(),
-            errors=self.errors.copy(),
-            x_label=self.x_label,
-            y_label=self.y_label,
-            x_unit=self.x_unit,
-            y_unit=self.y_unit,
+        return Hist2D.from_flow(
+            self._values, self.x_edges.copy(), self.y_edges.copy(), self._variances,
+            x_label=self.x_label, y_label=self.y_label,
+            x_unit=self.x_unit, y_unit=self.y_unit,
         )
 
     def __repr__(self):
@@ -221,42 +350,29 @@ def hist1d(
         of = 0.0
         counts, _ = np.histogram(values, bins=edges, weights=weights)
 
+    # Per-bin variance: sum of w² (weighted) or the count (unweighted); flows
+    # carry the same quantity for the out-of-range entries.
     if is_weighted:
-        # Compute sum-of-weights² for the error on each bin.
         w2 = weights ** 2
-        if overflow:
-            err, _ = np.histogram(
-                values[in_range], bins=edges, weights=w2[in_range]
-            )
-            err = np.sqrt(err)
-        else:
-            err, _ = np.histogram(values, bins=edges, weights=w2)
-            err = np.sqrt(err)
+        sumw2, _ = np.histogram(values[in_range] if overflow else values, bins=edges,
+                                weights=w2[in_range] if overflow else w2)
+        uf_w2 = float(np.sum(w2[values < lo])) if overflow else 0.0
+        of_w2 = float(np.sum(w2[values >= hi])) if overflow else 0.0
     else:
-        err = np.sqrt(counts)
+        sumw2 = counts.astype(np.float64)
+        uf_w2, of_w2 = uf, of
 
     if merge_overflow:
         counts[0] += uf
         counts[-1] += of
-        if is_weighted:
-            uf_w2 = float(np.sum(w2[~in_range & (values < lo)])) if overflow \
-                else float(np.sum(w2[values < lo]))
-            of_w2 = float(np.sum(w2[~in_range & (values >= hi)])) if overflow \
-                else float(np.sum(w2[values >= hi]))
-            err[0] = np.sqrt(err[0] ** 2 + uf_w2)
-            err[-1] = np.sqrt(err[-1] ** 2 + of_w2)
-        else:
-            err[0] = np.sqrt(err[0] ** 2 + uf)
-            err[-1] = np.sqrt(err[-1] ** 2 + of)
-        uf = 0.0
-        of = 0.0
+        sumw2[0] += uf_w2
+        sumw2[-1] += of_w2
+        uf = of = uf_w2 = of_w2 = 0.0
 
-    return Hist1D(
-        counts=counts,
-        edges=edges,
-        errors=err,
-        overflow=of,
-        underflow=uf,
+    return Hist1D.from_flow(
+        np.concatenate(([uf], counts, [of])),
+        edges,
+        np.concatenate(([uf_w2], sumw2, [of_w2])),
         is_weighted=is_weighted,
         label=label,
         unit=unit,
@@ -278,7 +394,10 @@ def hist2d(
 
     When ``weights`` are given, errors are computed as sqrt of the
     sum-of-weights-squared per bin (Poisson-like for weighted data).
-    Uses a single-pass np.bincount for both counts and error².
+    Entries outside the grid go to the flow strips and corners (ROOT's
+    convention: a value equal to the last edge is overflow); non-finite
+    entries are dropped. Uses a single-pass np.bincount for both counts and
+    error².
     """
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
@@ -299,27 +418,24 @@ def hist2d(
     y_edges = resolve_bins(bins_y, y, range=range_y)
     nx, ny = len(x_edges) - 1, len(y_edges) - 1
 
-    ix = np.digitize(x, x_edges) - 1
-    iy = np.digitize(y, y_edges) - 1
-    in_range = (ix >= 0) & (ix < nx) & (iy >= 0) & (iy < ny)
-    flat = ix[in_range] * ny + iy[in_range]
+    # Flow-inclusive cell index: 0 is underflow, n + 1 overflow, per axis.
+    fx = np.digitize(x, x_edges)
+    fy = np.digitize(y, y_edges)
+    flat = fx * (ny + 2) + fy
+    cells = (nx + 2) * (ny + 2)
 
     if weights is not None:
-        w = weights[in_range]
-        counts_flat = np.bincount(flat, weights=w, minlength=nx * ny)
-        err2_flat = np.bincount(flat, weights=w * w, minlength=nx * ny)
+        counts_flat = np.bincount(flat, weights=weights, minlength=cells)
+        err2_flat = np.bincount(flat, weights=weights * weights, minlength=cells)
     else:
-        counts_flat = np.bincount(flat, minlength=nx * ny)
-        err2_flat = counts_flat.astype(np.float64)
+        counts_flat = np.bincount(flat, minlength=cells).astype(np.float64)
+        err2_flat = counts_flat
 
-    counts = counts_flat.reshape(nx, ny)
-    errors = np.sqrt(err2_flat.reshape(nx, ny))
-
-    return Hist2D(
-        counts=counts,
-        x_edges=x_edges,
-        y_edges=y_edges,
-        errors=errors,
+    return Hist2D.from_flow(
+        counts_flat.reshape(nx + 2, ny + 2),
+        x_edges,
+        y_edges,
+        err2_flat.reshape(nx + 2, ny + 2),
         x_label=x_label,
         y_label=y_label,
         x_unit=x_unit,
@@ -338,50 +454,91 @@ def _check_rebin_factor(factor, nbins, axis="", hint=True):
     if nbins % factor:
         raise ValueError(
             f"rebin factor {factor} must exactly divide the {nbins} {axis}bins"
-            + ("; use rebin_to_edges() for an explicit trailing bin" if hint else "")
+            + ("; use rebin(hist, edges=...) for an explicit trailing bin" if hint else "")
         )
 
 
-def rebin(hist, factor=2):
-    """Merge `factor` adjacent bins. Returns a new Hist1D/Hist2D.
+def rebin(hist, factor=None, *, edges=None):
+    """Merge whole bins of a Hist1D or Hist2D; the one rebinning path.
 
-    The factor must divide the number of bins on each axis, so the summed
-    counts, stored variances and flows are preserved up to roundoff; a
-    trailing partial group is never dropped. Density histograms are merged
-    through raw bin yields. Merged variances add the stored per-bin
-    variances, which assumes bins are uncorrelated.
+    Give either ``factor`` (an integer, or one per axis for a Hist2D) that
+    divides the bin count of each axis, or ``edges`` (an array for a Hist1D,
+    an ``(x_edges, y_edges)`` pair for a Hist2D) drawn from the source edges
+    up to roundoff. Values and variances of merged bins add, which assumes
+    uncorrelated bins. A narrower range moves the bins left outside into the
+    underflow and overflow bins with their variances, so nothing is lost;
+    splitting a bin or widening the range raises ``ValueError``. Density
+    histograms are merged through raw bin yields. The output adopts exact
+    copies of the target edges.
     """
+    if (factor is None) == (edges is None):
+        raise ValueError("rebin takes either factor or edges")
+    sources = (hist.x_edges, hist.y_edges) if isinstance(hist, Hist2D) else (hist.edges,)
+    if factor is not None:
+        factors = tuple(factor) if isinstance(factor, (list, tuple)) else (factor,) * len(sources)
+        if len(factors) != len(sources):
+            raise ValueError("give one rebin factor per axis")
+        names = ("x ", "y ") if len(sources) == 2 else ("",)
+        for f, source, name in zip(factors, sources, names):
+            _check_rebin_factor(f, source.size - 1, name, hint=len(sources) == 1)
+        targets = tuple(source[::f].copy() for f, source in zip(factors, sources))
+    else:
+        targets = (edges,) if len(sources) == 1 else tuple(edges)
+        if len(targets) != len(sources):
+            raise ValueError("give one target edge array per source axis")
+        targets = tuple(np.array(t, dtype=np.float64, copy=True) for t in targets)
+        for target in targets:
+            if (target.ndim != 1 or target.size < 2
+                    or not np.all(np.isfinite(target)) or np.any(np.diff(target) <= 0)):
+                raise ValueError("target edges must be finite and strictly increasing")
+    return _merge_bins(hist, targets)
+
+
+def _merge_bins(hist, targets):
+    """Sum flow-inclusive values and variances onto aligned target axes."""
+    sources = (hist.x_edges, hist.y_edges) if isinstance(hist, Hist2D) else (hist.edges,)
+    destinations = []
+    for source, target in zip(sources, targets):
+        # Roundoff rule shared with require_comparable(edges="roundoff").
+        matched = _aligned_edge_indices(source, target)
+        # Flow-inclusive source index 0 is underflow and n + 1 overflow; place
+        # by boundary index so immaterial float differences cannot move a bin.
+        boundaries = np.arange(source.size + 1) - 1
+        destinations.append(np.searchsorted(matched, boundaries, side="right"))
+    values = hist.values(flow=True)
+    variances = hist.variances(flow=True)
+    density = isinstance(hist, Hist1D) and hist.is_density
+    if density:
+        values[1:-1] = hist.counts * hist.widths
+        variances[1:-1] = (hist.errors * hist.widths) ** 2
+    merged = np.zeros(tuple(t.size + 1 for t in targets))
+    merged_variances = np.zeros_like(merged)
+    np.add.at(merged, np.ix_(*destinations), values)
+    np.add.at(merged_variances, np.ix_(*destinations), variances)
     if isinstance(hist, Hist2D):
-        fx, fy = factor if isinstance(factor, (list, tuple)) else (factor, factor)
-        n, m = hist.counts.shape
-        _check_rebin_factor(fx, n, "x ", hint=False)
-        _check_rebin_factor(fy, m, "y ", hint=False)
-        counts = hist.counts.reshape(n // fx, fx, m // fy, fy).sum(axis=(1, 3))
-        err2 = (hist.errors ** 2).reshape(n // fx, fx, m // fy, fy).sum(axis=(1, 3))
-        return Hist2D(
-            counts,
-            hist.x_edges[::fx],
-            hist.y_edges[::fy],
-            errors=np.sqrt(err2),
+        return Hist2D.from_flow(
+            merged, *targets, merged_variances,
             x_label=hist.x_label, y_label=hist.y_label,
             x_unit=hist.x_unit, y_unit=hist.y_unit,
         )
-    _check_rebin_factor(factor, hist.nbins)
-    widths = hist.widths if hist.is_density else 1.0
-    raw_counts = (hist.counts * widths).reshape(-1, factor).sum(axis=1)
-    raw_err2 = ((hist.errors * widths) ** 2).reshape(-1, factor).sum(axis=1)
-    edges = hist.edges[::factor]
-    new_widths = np.diff(edges) if hist.is_density else 1.0
-    return Hist1D(
-        counts=raw_counts / new_widths,
-        edges=edges,
-        errors=np.sqrt(raw_err2) / new_widths,
-        label=hist.label,
-        unit=hist.unit,
-        overflow=hist.overflow,
-        underflow=hist.underflow,
-        is_weighted=hist.is_weighted,
-        is_density=hist.is_density,
+    if density:
+        widths = np.diff(targets[0])
+        merged[1:-1] /= widths
+        merged_variances[1:-1] = (np.sqrt(merged_variances[1:-1]) / widths) ** 2
+    return Hist1D.from_flow(
+        merged, targets[0], merged_variances,
+        label=hist.label, unit=hist.unit,
+        is_weighted=hist.is_weighted, is_density=hist.is_density,
+    )
+
+
+def _scaled(hist, scale):
+    """Hist1D times a constant: every bin, flows included, and every error."""
+    return Hist1D.from_flow(
+        hist.values(flow=True) * scale, hist.edges.copy(),
+        (np.sqrt(hist.variances(flow=True)) * scale) ** 2,
+        label=hist.label, unit=hist.unit,
+        is_weighted=hist.is_weighted, is_density=hist.is_density,
     )
 
 
@@ -392,16 +549,7 @@ def normalize(hist, to=1.0):
         scale = 0.0
     else:
         scale = to / integral
-    return Hist1D(
-        counts=hist.counts * scale,
-        edges=hist.edges.copy(),
-        errors=hist.errors * scale,
-        label=hist.label, unit=hist.unit,
-        overflow=hist.overflow * scale,
-        underflow=hist.underflow * scale,
-        is_weighted=hist.is_weighted,
-        is_density=hist.is_density,
-    )
+    return _scaled(hist, scale)
 
 
 def ratio(num, den, nan_to=None, include_denominator_error=True):
@@ -426,11 +574,21 @@ def ratio(num, den, nan_to=None, include_denominator_error=True):
     return r, r_err
 
 
+def _summed_flow_arrays(hists):
+    """Bin-wise sums of flow-inclusive values and squared errors."""
+    total = np.zeros_like(hists[0]._values)
+    total_err2 = np.zeros_like(total)
+    for h in hists:
+        total += h._values
+        total_err2 += h._variances
+    return total, total_err2
+
+
 def sum_histograms(hists, label=None):
     """Sum a list or dict of Hist1D objects into one.
 
-    Counts, underflow and overflow are summed; errors are propagated as
-    sqrt(sum of squares) for weighted (or Poisson) uncertainties.
+    Counts, underflow and overflow are summed; errors, flows included, are
+    propagated as sqrt(sum of squares) for weighted (or Poisson) uncertainties.
 
     Parameters
     ----------
@@ -456,35 +614,18 @@ def sum_histograms(hists, label=None):
         raise ValueError("sum_histograms: need at least one histogram")
 
     ref = values[0]
-    edges = ref.edges
-    total_counts = np.zeros_like(ref.counts)
-    total_err2 = np.zeros_like(ref.counts)
-    overflow = underflow = 0.0
-
     require_comparable(ref, *values[1:], edges="roundoff", operation="sum_histograms")
-    for h in values:
-        total_counts += h.counts
-        total_err2 += h.errors ** 2
-        overflow += h.overflow
-        underflow += h.underflow
-
-    return Hist1D(
-        counts=total_counts,
-        edges=edges.copy(),
-        errors=np.sqrt(total_err2),
-        label=label,
-        unit=ref.unit,
-        overflow=overflow,
-        underflow=underflow,
-        is_weighted=True,
-        is_density=ref.is_density,
+    total, total_err2 = _summed_flow_arrays(values)
+    return Hist1D.from_flow(
+        total, ref.edges.copy(), total_err2,
+        label=label, unit=ref.unit, is_weighted=True, is_density=ref.is_density,
     )
 
 
 def sum_histograms2d(hists, x_label=None, y_label=None, x_unit=None, y_unit=None):
     """Sum a list or dict of Hist2D objects on one grid (roundoff edge rule).
 
-    Counts are summed bin-wise; errors are propagated as
+    Counts and flow cells are summed bin-wise; errors are propagated as
     sqrt(sum of squares).
 
     Parameters
@@ -512,18 +653,9 @@ def sum_histograms2d(hists, x_label=None, y_label=None, x_unit=None, y_unit=None
     ref = values[0]
     require_comparable(ref, *values[1:], edges="roundoff", operation="sum_histograms2d")
 
-    total_counts = np.zeros_like(ref.counts)
-    total_err2 = np.zeros_like(ref.counts)
-
-    for h in values:
-        total_counts += h.counts
-        total_err2 += h.errors ** 2
-
-    return Hist2D(
-        counts=total_counts,
-        x_edges=ref.x_edges.copy(),
-        y_edges=ref.y_edges.copy(),
-        errors=np.sqrt(total_err2),
+    total, total_err2 = _summed_flow_arrays(values)
+    return Hist2D.from_flow(
+        total, ref.x_edges.copy(), ref.y_edges.copy(), total_err2,
         x_label=x_label if x_label is not None else ref.x_label,
         y_label=y_label if y_label is not None else ref.y_label,
         x_unit=x_unit if x_unit is not None else ref.x_unit,
@@ -549,59 +681,18 @@ def scale_to_luminosity(hist, cross_section, luminosity, sum_of_weights):
     if sum_of_weights == 0:
         raise ValueError("sum_of_weights must be non-zero for luminosity scaling")
     scale = cross_section * luminosity / sum_of_weights
-    return Hist1D(
-        counts=hist.counts * scale,
-        edges=hist.edges.copy(),
-        errors=hist.errors * scale,
-        label=hist.label,
-        unit=hist.unit,
-        overflow=hist.overflow * scale,
-        underflow=hist.underflow * scale,
-        is_weighted=hist.is_weighted,
-        is_density=hist.is_density,
-    )
+    return _scaled(hist, scale)
 
 
 #--------------------------------------------------------------------------
 # Edge-matching / rebin to arbitrary edges
 # --------------------------------------------------------------------------
 
-def rebin_to_edges(hist, target_edges):
-    """Merge whole bins of a Hist1D onto aligned *target_edges*.
-
-    Every target edge must be a source edge (up to roundoff) and the target
-    must span exactly the source range, so counts, variances, underflow and
-    overflow are preserved up to roundoff.  Splitting a bin, widening or narrowing
-    the range raises ``ValueError``: Hist1D flows carry no variance, so bins
-    cannot be moved into them.  Density histograms are merged through raw bin
-    yields.  The output adopts an exact copy of *target_edges*.
-    """
-    target = np.array(target_edges, dtype=np.float64)
-    if (target.ndim != 1 or target.size < 2
-            or not np.all(np.isfinite(target)) or np.any(np.diff(target) <= 0)):
-        raise ValueError("target_edges must be finite and strictly increasing")
-    matched = _aligned_edge_indices(hist.edges, target)
-    if matched[0] != 0 or matched[-1] != hist.nbins:
-        raise ValueError("target_edges must span exactly the source range")
-    widths = hist.widths if hist.is_density else 1.0
-    raw_counts = np.add.reduceat(hist.counts * widths, matched[:-1])
-    raw_variances = np.add.reduceat((hist.errors * widths) ** 2, matched[:-1])
-    new_widths = np.diff(target) if hist.is_density else 1.0
-    return Hist1D(
-        counts=raw_counts / new_widths, edges=target,
-        errors=np.sqrt(raw_variances) / new_widths,
-        label=hist.label, unit=hist.unit,
-        overflow=hist.overflow, underflow=hist.underflow,
-        is_weighted=hist.is_weighted,
-        is_density=hist.is_density,
-    )
-
-
 def divide_by_bin_width(hist):
     """Return a differential copy of *hist*, divided by each displayed bin width.
 
-    Underflow and overflow remain raw out-of-range yields because they have no
-    finite displayed-bin width.  The returned histogram has ``is_density=True``.
+    Underflow and overflow, and their errors, remain raw out-of-range yields
+    because they have no finite displayed-bin width.  The returned histogram has ``is_density=True``.
     """
     if not isinstance(hist, Hist1D):
         raise TypeError("divide_by_bin_width expects a Hist1D")
@@ -616,6 +707,8 @@ def divide_by_bin_width(hist):
         unit=hist.unit,
         overflow=hist.overflow,
         underflow=hist.underflow,
+        overflow_error=hist.overflow_error,
+        underflow_error=hist.underflow_error,
         is_weighted=hist.is_weighted,
         is_density=True,
     )
@@ -715,14 +808,6 @@ def require_comparable(first, *others, edges, finite=False, operation="compariso
         for name, a, b in axes:
             if not match(a, b):
                 raise ValueError(f"{operation} requires identical {name} ({edges} rule)")
-    if any(hist.errors.shape != hist.counts.shape for hist in (first, *others)):
-        raise ValueError(f"{operation}: errors must match their counts")
-    if isinstance(first, Hist2D):
-        expected = (first.x_edges.size - 1, first.y_edges.size - 1)
-    else:
-        expected = (first.edges.size - 1,)
-    if any(hist.counts.shape != expected for hist in (first, *others)):
-        raise ValueError(f"{operation}: counts must match the bins of their edges")
     if finite:
         for hist in (first, *others):
             if not np.all(np.isfinite(hist.counts)):

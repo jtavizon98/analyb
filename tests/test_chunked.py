@@ -556,6 +556,7 @@ def test_histogram_cache_preserves_density_metadata(tmp_path):
         root_data=_io.Hist1DRecord(
             np.array([2.0, 3.0]), np.array([0.0, 1.0, 3.0]),
             np.array([1.0, 1.5]), r"\GeV", 4.0, 5.0, True,
+            underflow_error=2.5, overflow_error=2.0,
         ),
     )
     cache_path = tmp_path / "cache.root"
@@ -566,25 +567,28 @@ def test_histogram_cache_preserves_density_metadata(tmp_path):
     assert loaded.is_density
     assert loaded.bin_width is None
     np.testing.assert_allclose(loaded.counts, [2.0, 3.0])
+    assert (loaded.underflow, loaded.overflow) == (5.0, 4.0)
+    assert (loaded.underflow_error, loaded.overflow_error) == (2.5, 2.0)
 
 
 def test_root_histogram_roundtrip_preserves_density_metadata(tmp_path):
     density = ab.divide_by_bin_width(ab.Hist1D(
         [2.0, 6.0], [0.0, 1.0, 3.0], errors=[1.0, 2.0], unit=r"\GeV",
-        underflow=-2.5, overflow=4.5, is_weighted=True,
+        underflow=-2.5, overflow=4.5, underflow_error=0.5, overflow_error=1.5,
+        is_weighted=True,
     ))
     path = tmp_path / "hist.root"
 
     ab.save_hist_to_root("density", density, file=path, mode="recreate")
-    loaded = ab.load_hist_from_root(path, "density")
+    loaded = ab.load_histogram(path, "density")
 
     assert loaded.is_density
     assert loaded.unit is None  # ROOT TH1 persistence has no unit metadata.
     np.testing.assert_allclose(loaded.counts, density.counts)
     np.testing.assert_allclose(loaded.edges, density.edges)
     np.testing.assert_allclose(loaded.errors, density.errors)
-    assert loaded.underflow == density.underflow
-    assert loaded.overflow == density.overflow
+    np.testing.assert_array_equal(loaded.values(flow=True), density.values(flow=True))
+    np.testing.assert_array_equal(loaded.variances(flow=True), density.variances(flow=True))
 
 
 def test_root_hist2d_roundtrip_preserves_weighted_errors(tmp_path):
@@ -595,7 +599,7 @@ def test_root_hist2d_roundtrip_preserves_weighted_errors(tmp_path):
     )
 
     ab.save_hist2d_to_root("weighted", hist, file=path, mode="recreate")
-    loaded = ab.load_hist_from_root(path, "weighted")
+    loaded = ab.load_histogram(path, "weighted")
 
     assert np.array_equal(loaded.counts, hist.counts)
     assert np.array_equal(loaded.errors, hist.errors)
@@ -626,29 +630,10 @@ def test_root_update_ignores_stale_optional_sidecars_across_cycles(tmp_path):
         file=path, mode="update",
     )
 
-    loaded = ab.load_hist_from_root(path, "hist")
+    loaded = ab.load_histogram(path, "hist", require_variances=False)
     assert not loaded.is_weighted
     np.testing.assert_allclose(loaded.counts, [16.0])
     np.testing.assert_allclose(loaded.errors, [4.0])
-
-
-def test_profile_update_clears_stale_sumw2_presence_marker(tmp_path):
-    uproot = pytest.importorskip("uproot")
-    path = tmp_path / "profile-update.root"
-    weighted = _io.Hist1DRecord(
-        np.array([4.0, 9.0]), np.array([0.0, 1.0, 2.0]),
-        errors=np.array([3.0, 5.0]),
-    )
-    profile = _io.ProfileRecord(
-        np.array([0.5, 1.5]), np.array([2.0, 3.0]), np.array([0.2, 0.3]),
-    )
-
-    _io.save_histogram_record("shared", weighted, file=path, mode="recreate")
-    _io.save_histogram_record("shared", profile, file=path, mode="update")
-
-    with uproot.open(path) as root_file:
-        assert not _io._sidecar_is_current(root_file, "shared", "sumw2")
-        assert _io._sidecar_is_current(root_file, "shared", "stderr")
 
 
 def test_histogram_cache_rejects_untyped_records_atomically(tmp_path):
@@ -684,6 +669,8 @@ def test_compare_cache_ignores_root_directories_and_cycles(tmp_path):
         None,
         5.0,
         4.0,
+        underflow_error=1.0,
+        overflow_error=3.0,
     )
     result = _par.TaskResult(
         name="met",
@@ -701,6 +688,7 @@ def test_compare_cache_ignores_root_directories_and_cycles(tmp_path):
     assert np.allclose(loaded["mc"]["ttbar"].errors, [2.0])
     assert loaded["mc"]["ttbar"].overflow == 5.0
     assert loaded["mc"]["ttbar"].underflow == 4.0
+    assert (loaded["mc"]["ttbar"].underflow_error, loaded["mc"]["ttbar"].overflow_error) == (1.0, 3.0)
     assert np.allclose(loaded["data"].counts, [3.0])
 
 
@@ -776,3 +764,38 @@ def test_histogram_cache_removes_destination_staging_file_on_copy_failure(tmp_pa
     with np.testing.assert_raises_regex(OSError, "copy failed"):
         io.save_histogram_cache([], file=tmp_path / "cache.root")
     assert not list(tmp_path.glob(".analyb-cache-*.root"))
+
+
+def test_files_from_the_sidecar_writer_are_refused(tmp_path):
+    """A histogram whose sumw2 and flows lived in sidecar keys cannot be read
+    back from its main key alone without losing both."""
+    uproot = pytest.importorskip("uproot")
+    path = tmp_path / "old.root"
+    edges = np.array([0.0, 1.0, 2.0])
+    with uproot.recreate(path) as root_file:
+        root_file["h"] = np.array([4.0, 9.0]), edges
+        root_file["h__sumw2"] = np.array([1.0, 2.0]), edges
+        root_file["h__flow"] = np.array([3.0, 5.0]), np.array([0.0, 1.0, 2.0])
+    with pytest.raises(ValueError, match="sidecar"):
+        ab.load_histogram(path, "h", require_variances=False)
+
+
+def test_written_histograms_are_ordinary_root_histograms(tmp_path):
+    """Another ROOT reader sees flows and fSumw2 without analyb's help."""
+    uproot = pytest.importorskip("uproot")
+    path = tmp_path / "native.root"
+    hist = ab.Hist1D([1.0, 2.0], [0.0, 1.0, 3.0], errors=[0.5, 0.25], underflow=3.0,
+                     overflow=-1.0, underflow_error=1.5, overflow_error=0.75, is_weighted=True)
+    grid = ab.hist2d(np.array([-1.0, 0.5, 0.5, 9.0]), np.array([0.5, 0.5, 2.5, 0.5]),
+                     bins=(np.array([0.0, 1.0, 2.0]), np.array([0.0, 1.0, 2.0, 3.0])),
+                     weights=np.array([2.0, 1.0, 3.0, 0.5]))
+    ab.save_hist_to_root("dir/h", hist, file=path, mode="recreate")
+    ab.save_hist2d_to_root("g", grid, file=path)
+    with uproot.open(path) as root_file:
+        h, g = root_file["dir/h"], root_file["g"]
+        assert h.classname == "TH1D" and g.classname == "TH2D"
+        np.testing.assert_array_equal(h.values(flow=True), [3.0, 1.0, 2.0, -1.0])
+        np.testing.assert_array_equal(h.variances(flow=True), [2.25, 0.25, 0.0625, 0.5625])
+        np.testing.assert_array_equal(g.values(flow=True), grid.values(flow=True))
+        np.testing.assert_array_equal(g.variances(flow=True), grid.variances(flow=True))
+        assert g.values(flow=True)[0, 1] == 2.0 and g.values(flow=True)[3, 1] == 0.5

@@ -104,7 +104,8 @@ and units explicitly (section 10); the registry starts empty.
     )
 
     h2 = ab.hist2d(x, y, bins=(40, 40), range=None, weights=wgt)
-    # Hist2D.errors is computed as sqrt(sum-of-weights²) when weighted
+    # Hist2D.errors is computed as sqrt(sum-of-weights²) when weighted;
+    # entries outside the grid are kept in its flow bins
 
     h          # repr: nbins, range, integral
     h.counts   # array
@@ -116,6 +117,25 @@ and units explicitly (section 10); the registry starts empty.
     h.centers
     h.integral()
     h.integral_error()                     # sqrt(Σ errors²) for weighted
+
+### Flow bins
+
+Both types carry underflow and overflow with their variances, laid out as
+ROOT and uproot's `values(flow=True)` (1D: `n + 2`; 2D: `(nx + 2, ny + 2)`,
+indexed `[x, y]`, displayed bins at `[1:-1, 1:-1]`):
+
+    h.values(flow=True), h.variances(flow=True)   # copies, flows included
+    h.values(), h.variances()                      # displayed bins only
+    h.underflow, h.overflow                        # 1D flow yields
+    h.underflow_error, h.overflow_error            # 1D flow errors
+    ab.Hist1D.from_flow(values, edges, variances, is_weighted=True)
+    ab.Hist2D.from_flow(values, x_edges, y_edges, variances)
+
+Variances are stored, as ROOT's fSumw2 is; `errors` is their square root and
+returns a constructor's errors unchanged (for errors above 1e-150). A weighted
+`Hist1D` with a nonzero flow needs that flow's error: there is no default.
+`counts`, `errors` and the edges are fixed in shape; assigning an array of
+another shape raises.
 
 ### Binning rules
 
@@ -140,14 +160,14 @@ retain the existing numerical `Counts / <bin width>` label.
 
 This returns a new `Hist1D`, dividing every displayed-bin count and error by
 its own width and marking it as a density (`density.is_density`). It preserves
-edges, labels, units, weighted status, and raw underflow/overflow yields. Its
+edges, labels, units, weighted status, and raw underflow/overflow yields and errors. Its
 y label is `Counts / unit` (or `Counts / <unit>`), not a first-bin-width approximation. It is not a
 unit-area normalization. Raw-count and density histograms cannot be summed or
 ratioed together; density rebinning converts through raw bin yields.
 
 ## 5. Operations on histograms
 
-    h_r   = ab.rebin(h, factor=2)        # factor must divide the bin count
+    h_r   = ab.rebin(h, 2)               # factor must divide the bin count; (fx, fy) for 2D
     h_n   = ab.normalize(h, to=1.0)
     r, e  = ab.ratio(h_num, h_den)       # → combined numerator/denominator error
     # Edges must match (roundoff only); zero-denominator bins are NaN by default.
@@ -168,11 +188,11 @@ ratioed together; density rebinning converts through raw bin yields.
     hs = ab.sum_histograms([h1, h2, h3])
     hs = ab.sum_histograms({"ttbar": h_tt, "Wt": h_wt})
     hs = h1 + h2 + h3
-    # Counts, underflow and overflow add; errors = sqrt(Σ errors²)
+    # Values and variances add bin by bin, flows included
 
     h2_sum = ab.sum_histograms2d([h2a, h2b, h2c])
     h2_sum = ab.sum_histograms2d({"chunk0": h2a, "chunk1": h2b})
-    # Merges exact-matching 2D histograms bin-wise; errors = sqrt(Σ errors²)
+    # Same for 2D, flows included
 
 ### Chunked profile aggregation
 
@@ -195,12 +215,19 @@ result matches the one-shot computation exactly.
 
 ### Merge bins onto aligned edges
 
-    h_merged = ab.rebin_to_edges(h, target_edges)
-    # sums whole source bins and their variances; flows are unchanged
+    h_merged = ab.rebin(h, edges=target_edges)              # Hist1D
+    g_merged = ab.rebin(g, edges=(x_target, y_target))      # Hist2D
+    # sums whole source bins and their variances
 
-Every target edge must be a source edge (roundoff only) and the target must
-span exactly the source range. Splitting a bin, widening or narrowing the range
-raises `ValueError`. Density histograms are merged through raw bin yields.
+Every target edge must be a source edge (roundoff only). A narrower target
+range moves the excluded bins into the flows with their variances, including
+2D edge strips and corners; splitting a bin or widening the range raises
+`ValueError`. Density histograms are merged through raw bin yields. The
+tolerance is 64 double-precision epsilons times the larger of the edge
+magnitude and full axis span, capped at 1e-10 of the narrower adjacent source
+bin: it permits serialization rounding and rejects material shifts even at
+large coordinate offsets. Variances are summed as independent bin sumw2; no
+covariance is inferred. Target binning belongs to the calling recipe.
 
 ### Luminosity scaling helper
 
@@ -228,7 +255,7 @@ normalization inputs are known and the weights are not already normalized.
     ab.hist1d_with_ratio(h_data, h_mc, variable="met", atlas=False, save_name="met_ratio")
 
 Data and MC must share bin edges (roundoff only); the plot raises instead of
-redistributing counts. Merge aligned bins with `rebin_to_edges()` first if needed.
+redistributing counts. Merge aligned bins with `rebin(h, edges=...)` first if needed.
 Data default to black points/errors and the MC model to Catppuccin red, including
 its uncertainty band. Explicit `data_color` and `mc_color` override those defaults.
 
@@ -607,53 +634,37 @@ guarantee. `total = 0` gives NaN bounds; counts above 2**53 are rejected.
     ab.save_hist_to_root("met_ttbar", h, file=ab.get_output_root(), mode="recreate")
     ab.save_hist2d_to_root("met_metphi", h2, file=..., mode="update")
 
-    h_loaded = ab.load_hist_from_root(ab.get_output_root(), "met_ttbar")
+    h_loaded = ab.load_histogram(ab.get_output_root(), "met_ttbar")
 
-Weighted 1D and 2D errors are persisted as sumw2 sidecars. `mode="update"`
-creates a missing file, but an invalid existing ROOT file raises instead of
-being silently replaced.
+analyb writes ordinary ROOT TH1D/TH2D objects with their flow bins and, for
+weighted histograms, fSumw2, so ROOT and other readers see the same numbers.
+A Hist1D density flag is kept in a `<name>__analyb_density` marker key.
+`mode="update"` creates a missing file, but an invalid existing ROOT file
+raises instead of being silently replaced.
 
-### Load an immutable external TH1 or TH2
+### Load any TH1 or TH2
 
-    loaded = ab.load_root_histogram("artifact.root", "region/histogram")
-    hist = loaded.histogram
-    loaded.values_with_flow       # exact ROOT values, including all flow bins
-    loaded.variances_with_flow    # exact ROOT variances, including all flow bins
-    loaded.axis_titles
-    loaded.classname
+    hist = ab.load_histogram("artifact.root", "region/histogram")
+    hist.values(flow=True)        # exact ROOT values, including all flow bins
+    hist.variances(flow=True)     # exact ROOT variances, including all flow bins
+    hist.label                    # axis title (x_label/y_label for TH2)
 
-The external loader requires a stored ROOT `fSumw2` array by default. This is
-the fail-closed path for weighted artifacts. A known unweighted histogram may
-opt into ROOT's inferred Poisson variances with `require_variances=False`.
-For TH1, `hist.underflow` and `hist.overflow` also expose the two flow yields.
-For TH2, use the flow-inclusive source arrays; their shape is `(nx + 2, ny + 2)`
-and their central slice is `[1:-1, 1:-1]`. No transpose, rebinning, or flow
-merging is performed.
+One loader serves external artifacts and files analyb wrote. It requires a
+stored `fSumw2` by default, the fail-closed path for weighted artifacts; a
+known unweighted histogram may opt into ROOT's Poisson variances with
+`require_variances=False`. A file from the earlier analyb writer, which kept
+sumw2 and flows in `__sumw2`/`__flow` sidecar keys, raises: rewrite it with
+the current analyb. No transpose or flow merging is performed.
 
 ### Aggregate artifact bins before normalization
 
-    source = ab.load_root_histogram("fine.root", "histogram")
-    reference = ab.load_root_histogram("benchmark.root", "histogram")
-    rebinned = ab.rebin_root_histogram(source, (reference.histogram.edges,))
-    # TH2: target_edges=(reference.histogram.x_edges, reference.histogram.y_edges)
+    source = ab.load_histogram("fine.root", "histogram")
+    reference = ab.load_histogram("benchmark.root", "histogram")
+    rebinned = ab.rebin(source, edges=reference.edges)
+    # TH2: edges=(reference.x_edges, reference.y_edges)
 
-`rebin_root_histogram` takes a `RootHistogram` and one target edge array per
-axis. It sums raw counts and variances of whole bins, returning another
-`RootHistogram` with exact copies of the target edges and unchanged source
-metadata. Source arrays are not modified. Narrower target ranges move excluded
-bins into underflow/overflow, including TH2 edge strips and corners. Report
-these flow-inclusive arrays separately from displayed-bin yields.
-
-Target edges must align with existing edges, using the same matcher and
-tolerance as `rebin_to_edges`. The tolerance is 64 double-precision
-epsilons times the larger of the edge magnitude and full axis span, capped
-at 1e-10 of the narrower adjacent source bin. This permits immaterial serialization
-rounding but rejects material shifts even at large coordinate offsets. Splitting
-bins or recovering a wider range from existing flow totals is unsupported.
-Aggregate before shape normalization or density conversion; density inputs are
-rejected. Variances are summed as independent bin sumw2; no event-level
-information or covariance is inferred. Target binning belongs to the calling
-analysis recipe.
+Aggregate before shape normalization. Report the flow-inclusive arrays
+separately from displayed-bin yields.
 
 ### Pairwise artifact diagnostics
 

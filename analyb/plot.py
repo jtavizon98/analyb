@@ -652,7 +652,7 @@ def hist1d_with_ratio(
     if mc_color is None:
         mc_color = catppuccin_colors["red"]
 
-    # Plots never redistribute counts: merge aligned bins with rebin_to_edges().
+    # Plots never redistribute counts: merge aligned bins with rebin(edges=...).
     require_comparable(mc_hist, data_hist, edges="roundoff", operation="hist1d_with_ratio")
 
     fig, (ax_main, ax_ratio) = _ratio_axes(figsize)

@@ -32,13 +32,14 @@ without producing an immediate error.
   normalization, preserving flow accounting on both axes and immutable inputs.
   Target edges belong to the caller; reject material splits or wider ranges.
   Edge roundoff tolerance must be bounded by neighboring bin widths, never
-  solely by the absolute coordinate magnitude. `rebin_root_histogram` and
-  `rebin_to_edges` share `histogram._aligned_edge_indices`; ROOT validation,
-  flow handling and aggregation stay in `comparison.py`.
+  solely by the absolute coordinate magnitude. `rebin` is the one bin-merging
+  path (factor or edges, 1D and 2D, flows included); `load_histogram` is the
+  one ROOT reader, and the writer emits native TH1D/TH2D it reads back.
 - `rebin` requires a factor that divides the bins on every axis; never drop a
   trailing partial group. `sum_histograms` adds underflow and overflow.
   `tests/test_histogram_properties.py` states these conservation laws.
-- `rebin_to_edges` merges whole aligned bins only and keeps the source range;
+- Hist1D/Hist2D store flow-inclusive values and variances; every operation
+  carries the flows. `rebin(edges=...)` merges whole aligned bins only;
   `hist1d_with_ratio` and `hist1d_stacked` require shared edges. Never
   redistribute counts by bin-overlap fraction.
 - Artifact comparison in analyb is noncanonical and diagnostics-only. Keep

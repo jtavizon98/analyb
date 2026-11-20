@@ -67,7 +67,7 @@ def test_divide_by_bin_width_is_nonmutating_and_differential():
     hist = ab.Hist1D(
         counts=[4.0, 12.0, 24.0], edges=[0.0, 1.0, 3.0, 6.0],
         errors=[2.0, 6.0, 12.0], unit=r"\GeV", overflow=7.0, underflow=5.0,
-        is_weighted=True,
+        overflow_error=3.0, underflow_error=2.0, is_weighted=True,
     )
     density = ab.divide_by_bin_width(hist)
 
@@ -76,6 +76,7 @@ def test_divide_by_bin_width_is_nonmutating_and_differential():
     assert density.is_density
     assert density.bin_width is None
     assert density.overflow == 7.0 and density.underflow == 5.0
+    assert (density.overflow_error, density.underflow_error) == (3.0, 2.0)
     assert density.integral() == 40.0
     assert density.integral_error() == np.sqrt(184.0)
     np.testing.assert_allclose(hist.counts, [4.0, 12.0, 24.0])
@@ -164,47 +165,60 @@ def test_density_rebin_rejects_a_trailing_bin():
 def test_rebin_to_edges_merges_aligned_bins_exactly():
     hist = ab.Hist1D(
         [1.0, 2.0, 3.0, 4.0], [0.0, 1.0, 2.0, 4.0, 8.0], errors=[0.5, 1.0, 1.5, 2.0],
-        overflow=5.0, underflow=6.0, is_weighted=True,
+        overflow=5.0, underflow=6.0, overflow_error=1.0, underflow_error=2.0, is_weighted=True,
     )
     target = [0.0, 2.0 + 1e-15, 8.0]
-    merged = ab.rebin_to_edges(hist, target)
+    merged = ab.rebin(hist, edges=target)
 
     assert np.array_equal(merged.edges, target)
     np.testing.assert_allclose(merged.counts, [3.0, 7.0])
     np.testing.assert_allclose(merged.errors ** 2, [0.25 + 1.0, 2.25 + 4.0])
     assert merged.overflow == 5.0 and merged.underflow == 6.0
+    assert (merged.overflow_error, merged.underflow_error) == (1.0, 2.0)
     assert merged.is_weighted
     np.testing.assert_allclose(hist.counts, [1.0, 2.0, 3.0, 4.0])
 
-    density = ab.rebin_to_edges(ab.divide_by_bin_width(hist), target)
+    density = ab.rebin(ab.divide_by_bin_width(hist), edges=target)
     assert density.is_density
     np.testing.assert_allclose(density.counts, [3.0 / 2.0, 7.0 / 6.0])
     np.testing.assert_allclose(density.integral(), hist.integral())
     np.testing.assert_allclose(density.integral_error(), hist.integral_error())
 
 
+def test_rebin_to_a_narrower_range_moves_bins_into_the_flows():
+    hist = ab.Hist1D(
+        [1.0, 2.0, 3.0, 4.0], [0.0, 1.0, 2.0, 3.0, 4.0], errors=[0.5, 1.0, 1.5, 2.0],
+        overflow=5.0, underflow=6.0, overflow_error=1.0, underflow_error=2.0, is_weighted=True,
+    )
+    narrowed = ab.rebin(hist, edges=[1.0, 3.0])
+    np.testing.assert_array_equal(narrowed.values(flow=True), [7.0, 5.0, 9.0])
+    np.testing.assert_allclose(narrowed.variances(flow=True),
+                               [4.0 + 0.25, 1.0 + 2.25, 4.0 + 1.0])
+    assert np.sum(narrowed.values(flow=True)) == np.sum(hist.values(flow=True))
+
+
 def test_rebin_to_edges_matches_edges_in_linear_memory():
     # A full source x target distance matrix for 200k edges would need ~320 GB.
     edges = np.linspace(0.0, 1.0, 200_001)
     hist = ab.Hist1D(np.ones(edges.size - 1), edges)
-    identity = ab.rebin_to_edges(hist, edges)
+    identity = ab.rebin(hist, edges=edges)
     np.testing.assert_array_equal(identity.counts, hist.counts)
-    merged = ab.rebin_to_edges(hist, edges[::1000])
+    merged = ab.rebin(hist, edges=edges[::1000])
     np.testing.assert_allclose(merged.counts, 1000.0)
 
 
-def test_rebin_to_edges_rejects_split_bins_and_range_changes():
+def test_rebin_to_edges_rejects_split_bins_and_wider_ranges():
     hist = ab.Hist1D([1.0, 2.0, 3.0], [0.0, 1.0, 2.0, 3.0])
-    for target, message in (
-        ([0.0, 1.5, 3.0], "align with source edges"),
-        ([0.0, 1.0, 1.0 + 1e-6, 3.0], "align with source edges"),
-        ([0.0, 2.0, 4.0], "align with source edges"),
-        ([-1.0, 1.0, 3.0], "align with source edges"),
-        ([1.0, 3.0], "span exactly the source range"),
-        ([0.0, 2.0], "span exactly the source range"),
+    for target in (
+        [0.0, 1.5, 3.0],
+        [0.0, 1.0, 1.0 + 1e-6, 3.0],
+        [0.0, 2.0, 4.0],
+        [-1.0, 1.0, 3.0],
     ):
-        with np.testing.assert_raises_regex(ValueError, message):
-            ab.rebin_to_edges(hist, target)
+        with np.testing.assert_raises_regex(ValueError, "align with source edges"):
+            ab.rebin(hist, edges=target)
+    with np.testing.assert_raises_regex(ValueError, "either factor or edges"):
+        ab.rebin(hist, 1, edges=[0.0, 3.0])
 
 
 def test_data_mc_plots_reject_misaligned_bins():
@@ -228,3 +242,28 @@ def test_efficiency_error_lengths_are_nonnegative_at_boundary_counts():
     assert err_high[2] == 0.0 and err_low[2] > 0
     assert np.all(err_low[:3] >= 0) and np.all(err_high[:3] >= 0)
     assert np.isnan(eff[3]) and np.isnan(err_low[3]) and np.isnan(err_high[3])
+
+
+def test_filling_keeps_out_of_range_entries_in_the_flows_with_their_variance():
+    w = np.array([2.0, 1.0, 3.0, 0.5, 4.0])
+    h = ab.hist1d(np.array([-1.0, 0.5, 0.5, 9.0, 1.5]), weights=w,
+                  bins=np.array([0.0, 1.0, 2.0]), overflow=True)
+    np.testing.assert_array_equal(h.values(flow=True), [2.0, 4.0, 4.0, 0.5])
+    np.testing.assert_array_equal(h.variances(flow=True), [4.0, 10.0, 16.0, 0.25])
+
+    g = ab.hist2d(np.array([-1.0, 0.5, 0.5, 9.0]), np.array([0.5, 0.5, 2.5, -4.0]),
+                  bins=(np.array([0.0, 1.0, 2.0]), np.array([0.0, 1.0, 2.0])),
+                  weights=np.array([2.0, 1.0, 3.0, 0.5]))
+    expected = np.zeros((4, 4))
+    expected[0, 1], expected[1, 1], expected[1, 3], expected[3, 0] = 2.0, 1.0, 3.0, 0.5
+    np.testing.assert_array_equal(g.values(flow=True), expected)
+    np.testing.assert_array_equal(g.variances(flow=True), expected ** 2)
+    np.testing.assert_array_equal(g.counts, [[1.0, 0.0], [0.0, 0.0]])
+    assert g.values(flow=True).sum() == 6.5
+
+
+def test_weighted_flows_without_an_error_are_refused():
+    with np.testing.assert_raises_regex(ValueError, "overflow_error"):
+        ab.Hist1D([1.0], [0.0, 1.0], errors=[1.0], overflow=2.0, is_weighted=True)
+    unweighted = ab.Hist1D([4.0], [0.0, 1.0], overflow=9.0)
+    assert unweighted.overflow_error == 3.0
