@@ -155,7 +155,8 @@ def _fit_top(ax, *, atlas, fixed=False):
         need = figcheck.overlay_need(ax)
         if need is None or need.upper <= ax.get_ylim()[1]:
             return
-    fit_overlay_headroom(ax, raise_floor=False)   # the plotter's floor shows every populated bin
+    # The plotter keeps its floor (every populated bin in view) and its tick locator (a caller may change the limits).
+    fit_overlay_headroom(ax, raise_floor=False, prune_ticks=False)
 
 
 def artist_axes_bounds(artist, ax=None):
