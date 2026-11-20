@@ -70,12 +70,12 @@ imports, internal call structure, or other incidental implementation choices.
 | `cutflow.py`           | Caller-supplied cutflow data, nested weighted efficiency variance, charting, aligned cutflow comparison                       |
 | `figcheck.py`          | Render-time figure lint: clipped, overlapping, data-covering and undersized text; optional save hook with JSON sidecar |
 | `histogram.py`         | Hist1D/Hist2D with flow bins, fill, rebin, normalize, profile; the one owner of grid comparability and bin-by-bin quotients |
-| `io.py`                | TTree loading, one TH1/TH2 loader with flows and fSumw2, native TH1D/TH2D writer, histogram cache                             |
+| `io.py`                | TTree loading, one TH1/TH2 loader with flows and fSumw2, native TH1D/TH2D writer                             |
 | `makelatex.py`         | LaTeX auto-generation for figure environments; compact plotbook with optional page map JSON                                   |
-| `parallel.py`          | Forked fill/replot workers with parent-owned typed ROOT persistence                                                            |
 | `plot.py`              | 1D/2D plots, ratio panels, stacked, fits, ATLAS label, final annotation headroom                                            |
 | `printed.py`           | Printed-value manifest: each typeset number with key, value, text, source, context |
 | `provenance.py`        | Run provenance sidecars: clean committed source revisions, input/output hashes, recipe parameters, verification               |
+| `render.py`            | render_many: independent figure tasks, serial or forked pool, registry and printed records replayed in task order |
 | `stats.py`             | Chi-squared, Poisson likelihood, Clopper-Pearson binomial intervals, Gaussian model functions                                 |
 | `style.py`             | Import-time MathText-first Matplotlib style from `styles/analyb.mplstyle`; applied on `import analyb`                         |
 | `units.py`             | SI prefix scaling, bin-width formatting                                                                                       |

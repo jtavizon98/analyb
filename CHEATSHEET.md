@@ -1138,155 +1138,35 @@ map is written.
 figures later scaled onto a compact page; it restores the previous rcParams on
 exit.
 
-## 18. Parallel batch processing
+## 18. Rendering many figures
 
-The `analyb.parallel` module lets you fill and plot multiple histograms in
-parallel using `ProcessPoolExecutor` (fork mode). Workers inherit the
-DataFrame copy-on-write, so no large data pickling happens.
+`ab.render_many(tasks, workers=None)` runs independent figure tasks and
+returns their results in task order. A task is a picklable zero-argument
+callable, usually `functools.partial` of a module-level function; it draws,
+saves and registers its figures and returns whatever the caller needs (an
+evidence record, section entries).
 
-    # 1D batch (replaces a manual for-loop over variables)
-    results = ab.parallel.hist1d_batch(
-        df,
-        variables=["met", "ptl1", "ptb1"],   # flat list, or
-        # variables=PLOT_PLAN,                # section-structured dict
-        weights=wgt,
-        ranges=VAR_RANGES,
-        integer_vars={"njets", "nbjets"},
-        ylog={"met", "ptl1"},                # True, set, or None
-        max_workers=8,
-        progress=True,                       # tqdm or simple counter
-    )
+    import functools
 
-    # 2D batch
-    results = ab.parallel.hist2d_batch(
-        df,
-        pairs=[("met", "ptl1"), ("metphi", "phil1")],
-        # pairs=PLAN_2D,                    # section dict also accepted
-        weights=wgt, ranges=VAR_RANGES,
-        log_norm=True, max_workers=8,
-    )
+    def draw(variable, out):
+        fig, ax = ab.hist1d_plot(...)
+        ab.save_figure(fig, variable, save_path=out)
+        ab.makelatex.register(ab.get_script_id(), "Distributions", f"{variable}.pdf")
+        return {"variable": variable, "integral": float(...)}
 
-    # Profile batch
-    results = ab.parallel.profile_batch(
-        df,
-        pairs=[("met", "mtlep"), ("ptb1", "ptb2")],
-        ranges=VAR_RANGES, max_workers=8,
-    )
+    records = ab.render_many([functools.partial(draw, v, out) for v in variables])
 
-All batch functions return `list[TaskResult]` — inspect `.success`,
-`.error`, and `.traceback` per task. ROOT histograms (including profiles
-and per-sample compare histograms) and LaTeX captions are saved **serially
-in the parent** after all workers finish, to ``{output_dir}/{script_id}-output.root``.
-`TaskResult.root_data` is one of `Hist1DRecord`, `Hist2DRecord`,
-`ProfileRecord`, or `CompareRecord`; tuple and marker-dict wire formats are not
-accepted. Use `ab.hist1d_record(hist)` and `ab.hist2d_record(hist)` when
-constructing a result outside the batch helpers.
-An invalid record fails the caller instead of being skipped silently. Cache
-replacement remains atomic, so a failed cache write retains its prior artifact.
-
-### Data/MC comparison batch
-
-The `compare_batch` function distributes per-variable data/MC comparison
-plots (overlays, ratios, stacked) across workers.
-
-    # Overlay (unit-area normalised MC comparison)
-    ab.parallel.compare_batch(
-        dfs_mc, None, variables, edges,
-        plot_type="overlay", save_prefix="cmp_",
-        section="MC shape comparisons",
-        caption_fmt="Shape comparison: {var}, {samples}",
-        ylog=set_of_log_vars,
-    )
-
-    # Data/MC ratio
-    ab.parallel.compare_batch(
-        dfs_mc, df_data, variables, edges,
-        plot_type="ratio", save_prefix="data_mc_ratio_",
-        section="Data/MC ratio panels",
-        caption_fmt="{var} -- Data / MC ratio",
-    )
-
-    # Stacked MC + data
-    ab.parallel.compare_batch(
-        dfs_mc, df_data, variables, edges,
-        plot_type="stacked", save_prefix="data_mc_stack_",
-        section="Stacked MC + data",
-        caption_fmt="{var} -- stacked MC ({samples}) with data",
-        stack_colors={"ttbar": "tab:blue", "Wt": "tab:orange"},
-        stack_data_color="black",
-    )
-
-Parameters:
-
-- `dfs_mc` — dict of MC DataFrames (`{"ttbar": df_tt, "Wt": df_wt, ...}`)
-- `df_data` — data DataFrame (`None` for MC-only overlays)
-- `edges` — shared bin edges per variable (from `concat_edges`)
-- `caption_fmt` — LaTeX caption with `{var}` (label) and `{samples}` (joined names)
-- `stack_colors`, `stack_data_color` — optional stacked-only color controls;
-  these are also accepted by `replot_compare_batch`
-
-### Error handling
-
-Each worker catches exceptions and returns a `TaskResult(success=False, …)`.
-The parent summarises failures at the end:
-
-    30 tasks: 28 succeeded, 2 failed
-      FAILED: metphi  → ValueError: ...
-      FAILED: dR2b   → OSError: ...
-
-Set `fail_fast=True` to cancel remaining tasks on first failure.
-
-### Progress display
-
-- With tqdm installed: animated progress bar
-- Without tqdm: simple `[done/total]` counter line
-- Each indicator names its operation (for example `Fill 2D plots` or
-  `Replot Comparison (stacked)`).
-
-  pip install tqdm # optional, recommended
-
-### Histogram cache and replot
-
-The histogram cache stores all computed histograms (1D, 2D, profiles,
-compare per-sample) in a ROOT file ``{output_dir}/{script_id}-cache.root``.
-
-    # Save cache from batch results
-    ab.save_histogram_cache(results)
-
-    # Load cache back
-    cache = ab.load_histogram_cache()
-    cache["hist1d"]    # {var: Hist1D, ...}
-    cache["hist2d"]    # {key: Hist2D, ...}
-    cache["profiles"]  # {key: (centers, means, stderr), ...}
-    cache["compare"]   # {var: {"mc": {name: Hist1D, ...}, "data": ...}}
-
-### Replot from cache (no data loading)
-
-    # Instead of hist1d_batch(df, ...)
-    ab.parallel.replot_1d_batch(cache["hist1d"], PLOT_PLAN, ...)
-
-    # Instead of hist2d_batch(df, ...)
-    ab.parallel.replot_2d_batch(cache["hist2d"], PLAN_2D, ...)
-
-    # Instead of profile_batch(df, ...)
-    ab.parallel.replot_profile_batch(cache["profiles"], PROFILE_PLAN, ...)
-
-    # Instead of compare_batch(dfs_mc, df_data, ...)
-    ab.parallel.replot_compare_batch(cache["compare"], variables, ...)
-
-All replot functions use the same ``ProcessPoolExecutor`` parallel
-machinery.  The analysis script supports ``--replot`` as a shortcut:
-
-    python example.py --replot
-
-### Replot functions now register LaTeX
-
-The four ``replot_*_batch`` functions (:func:`~analyb.parallel.replot_1d_batch`,
-:func:`~analyb.parallel.replot_2d_batch`, :func:`~analyb.parallel.replot_profile_batch`,
-:func:`~analyb.parallel.replot_compare_batch`) now also register LaTeX section entries
-identical to their non-replot counterparts.  Only entries whose histograms are
-actually **present** in the supplied cache dictionaries are registered — no
-stale entries from the variable catalog.
+- `workers=1` renders in this process; `None` uses `ab.render.default_workers()`
+  (usable CPUs, at most 4). Workers are forked, so they inherit the caller's
+  data and analyb's context state (script id, save path, figure-check mode,
+  layout rules).
+- LaTeX registrations and printed-value records made inside a task are
+  replayed into the caller's registry and active manifest in task order, so
+  the registry, the manifest and the results are the same for any worker count.
+- Every task runs. If any fail, `ab.RenderError` lists each failed task with
+  its traceback; registrations of failed tasks are dropped.
+- Tasks must not share mutable state: return what the caller collects instead
+  of appending to a list owned by the caller.
 
 ### Table registration with ``register_table``
 
@@ -1305,19 +1185,6 @@ one after the included fragment.
 :meth:`YieldTable.to_latex` now escapes LaTeX special characters (``_``, ``&``,
 ``%``, ``$``, etc.) in row and column labels, uses ``$\pm$`` for uncertainties,
 and emits a correct all-``l`` column specification.
-
-### Notes
-
-- All batch functions (`hist1d_batch`, `hist2d_batch`, `profile_batch`,
-  `compare_batch`) save their histograms to the output ROOT file and
-  register LaTeX captions automatically.
-- Replot functions do **not** save to ROOT (they only regenerate figures).
-- `hist1d_batch` auto-registers LaTeX captions when variables are passed
-  as a section-structured dict (the same format as `PLOT_PLAN`).
-- The histogram cache is always written during normal runs (saved for all
-  successful tasks).  It is a separate file from the output ROOT file.
-  It is written locally first, then copied to a same-directory staging file and
-  atomically replaced where supported; logs report write, copy, and total time.
 
 ### Compact benchmark presentation
 

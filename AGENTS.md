@@ -17,13 +17,12 @@ without producing an immediate error.
   measured ratio. Errors never decide whether a ratio value exists.
 - Variable labels and units belong to the caller. Keep the default registry
   empty; unknown names fall back to `(name, None)` unless strict lookup is used.
-- Direct ROOT and histogram-cache serialization must preserve weighted
-  `Hist1D.errors` and `Hist2D.errors` as sumw2 so normal and replot outputs
-  agree.
-- Histogram persistence accepts only the typed records in `analyb.io`. An
-  invalid existing ROOT file must fail an update; never recreate it silently.
-  Any invalid record must fail the caller instead of being skipped silently;
-  cache replacement remains atomic.
+- ROOT serialization must preserve weighted `Hist1D`/`Hist2D` values and
+  variances, flows included, exactly. An invalid existing ROOT file must fail
+  an update; never recreate it silently.
+- `render_many` results, LaTeX registry and printed records must not depend on
+  the worker count: capture what a task registers where it runs and replay it
+  in task order.
 - External artifact loading must retain ROOT flow-inclusive values and stored
   variances without transposing, merging, or silently inferring weighted
   errors. Pairwise comparisons require exact edges, use numerator/reference
