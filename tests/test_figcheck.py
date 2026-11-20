@@ -1092,3 +1092,27 @@ def test_a_twin_axes_legend_still_needs_headroom_on_the_log_axes():
     twin.legend(loc="upper left", frameon=False, fontsize=14)
     found = _by_check(ab.check_figure(fig, log_headroom_cap=2.5), "log-headroom")
     assert any("reaches down into the data" in f.message for f in found), found
+
+
+def test_a_reference_line_spanning_the_frame_is_not_data():
+    # Architecture review, 20 Nov 2026: an axvline's y runs over the whole frame in axes units, so it was read as data
+    # reaching the axis top; a figure wasting 1.5 decades above its data passed. An axhline does the same along x.
+    def figure(lines):
+        fig, ax = plt.subplots(figsize=(4.5, 4.0))
+        ax.stairs(10 ** np.linspace(4, 1, 40), np.linspace(1, 400, 41), label="MC")
+        if lines:
+            ax.axvline(300, ls="--")
+            ax.axvspan(50, 80, alpha=0.2)
+            ax.axhline(20, ls=":")
+        ax.set_yscale("log")
+        ax.set_xscale("log")
+        ax.set_ylim(1, 10 ** 5.5)
+        ax.legend(loc="upper right", frameon=False)
+        found = [(f.check, f.severity, round(f.value, 2)) for f in ab.check_figure(fig, log_headroom_cap=2.5)
+                 if f.check.startswith("log-")]
+        plt.close(fig)
+        return found
+
+    plain = figure(False)
+    assert ("log-headroom", "fail", 1.5) in plain, plain
+    assert figure(True) == plain

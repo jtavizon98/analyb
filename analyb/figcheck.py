@@ -399,15 +399,25 @@ def _point_mask(coll, n):
     return sized & (alpha(coll.get_facecolor()) | stroked)
 
 
-def _data_shapes(ax):
+def _in_data_units(artist, ax, along):
+    """Whether ``artist`` is placed in data units along axis ``along`` ("x" or "y"). An ``axvline`` spans the frame in
+    axes units along y (an ``axhline`` along x), so its extent there is the frame's, not a data value."""
+    where = artist.get_offset_transform() if isinstance(artist, PathCollection) else artist.get_transform()
+    return where.contains_branch_seperately(ax.transData)[0 if along == "x" else 1]
+
+
+def _data_shapes(ax, along=None):
     """Yield (artist, kind, display arrays) for plotted data that paints pixels.
 
     ``kind`` is ``"points"`` (marker centres), ``"lines"`` (polylines) or
     ``"area"`` (filled display paths). Artists that are invisible, fully
-    transparent, zero-width, or zero-size are skipped.
+    transparent, zero-width, or zero-size are skipped. With ``along`` ("x" or
+    "y"), for measuring the data's extent on that axis, artists not placed in
+    data units along it (reference lines and bands spanning the frame) are
+    skipped too.
     """
     for line in ax.lines:
-        if not _painted(line):
+        if not _painted(line) or along and not _in_data_units(line, ax, along):
             continue
         alpha = line.get_alpha()
         has_line = (line.get_linestyle() not in ("None", "none", " ", "")
@@ -422,7 +432,7 @@ def _data_shapes(ax):
         points = line.get_transform().transform(line.get_path().vertices)
         yield line, ("lines" if has_line else "points"), [points]
     for coll in ax.collections:
-        if not _painted(coll) or isinstance(coll, QuadMesh):
+        if not _painted(coll) or isinstance(coll, QuadMesh) or along and not _in_data_units(coll, ax, along):
             continue
         if isinstance(coll, PathCollection):
             offsets = np.asarray(coll.get_offsets(), dtype=float)
@@ -439,7 +449,7 @@ def _data_shapes(ax):
         elif stroked:
             yield coll, "lines", [transform.transform(p.vertices) for p in coll.get_paths()]
     for patch in ax.patches:
-        if not _painted(patch):
+        if not _painted(patch) or along and not _in_data_units(patch, ax, along):
             continue
         path = patch.get_transform().transform_path(patch.get_path())
         if patch.get_fill() and _visible_alpha(patch.get_facecolor()):
@@ -458,7 +468,7 @@ def _axis_content(ax, axis_name):
     limits = ax.get_ylim() if axis_name == "y" else ax.get_xlim()
     col = 1 if axis_name == "y" else 0
     values = []
-    for artist, kind, shapes in _data_shapes(ax):
+    for artist, kind, shapes in _data_shapes(ax, along=axis_name):
         for shape in shapes:
             pts = shape.vertices if hasattr(shape, "vertices") else np.asarray(shape)
             pts = pts[np.all(np.isfinite(pts), axis=1)]
@@ -707,7 +717,7 @@ def _log_headroom_need(ax, items):
     frame = ax.get_window_extent()
     inv = ax.transData.inverted()
     shapes = []
-    for _, kind, arrays in _data_shapes(ax):
+    for _, kind, arrays in _data_shapes(ax, along="y"):
         for arr in arrays:
             if hasattr(arr, "to_polygons"):
                 shapes += [("lines", poly) for poly in arr.to_polygons(closed_only=False)]
