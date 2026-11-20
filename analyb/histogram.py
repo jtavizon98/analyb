@@ -726,7 +726,7 @@ def _edge_tolerance(edges, indices):
 
     Double-precision scale of the coordinate or the axis span, capped by a
     small fraction of the narrower neighbouring bin, so that no tolerance can
-    absorb a material edge shift (same rule as ``rebin_root_histogram``).
+    absorb a material edge shift.
     """
     widths = np.diff(edges)
     local_width = np.minimum(np.r_[widths[0], widths], np.r_[widths, widths[-1]])

@@ -799,3 +799,33 @@ def test_written_histograms_are_ordinary_root_histograms(tmp_path):
         np.testing.assert_array_equal(g.values(flow=True), grid.values(flow=True))
         np.testing.assert_array_equal(g.variances(flow=True), grid.variances(flow=True))
         assert g.values(flow=True)[0, 1] == 2.0 and g.values(flow=True)[3, 1] == 0.5
+
+
+def test_written_histograms_read_back_with_exact_variances(tmp_path):
+    """Write/read keeps every flow-inclusive value and variance bit for bit."""
+    rng = np.random.default_rng(3)
+    edges = np.array([0.0, 1.0, 2.5, 4.0, 7.0])
+    hist = ab.hist1d(rng.normal(3, 3, 500), weights=rng.normal(1, .4, 500),
+                     bins=edges, overflow=True)
+    grid = ab.hist2d(rng.normal(2, 2, 500), rng.normal(2, 2, 500),
+                     bins=(edges, edges[:4]), weights=rng.normal(1, .4, 500))
+    path = tmp_path / "exact.root"
+    ab.save_hist_to_root("h", hist, file=path, mode="recreate")
+    ab.save_hist_to_root("d", ab.divide_by_bin_width(hist), file=path)
+    ab.save_hist2d_to_root("g", grid, file=path)
+    for name, original in (("h", hist), ("d", ab.divide_by_bin_width(hist)), ("g", grid)):
+        loaded = ab.load_histogram(path, name)
+        np.testing.assert_array_equal(loaded.values(flow=True), original.values(flow=True))
+        np.testing.assert_array_equal(loaded.variances(flow=True), original.variances(flow=True))
+
+
+def test_loader_refuses_non_finite_values(tmp_path):
+    uproot = pytest.importorskip("uproot")
+    from uproot.writing.identify import to_TAxis, to_TH1x
+    path = tmp_path / "inf.root"
+    values = np.array([np.inf, 1.0, 2.0, 0.0])
+    with uproot.recreate(path) as root_file:
+        root_file["h"] = to_TH1x("h", "", values, 3.0, 3.0, 3.0, 0.0, 0.0, np.ones(4),
+                                 to_TAxis("xaxis", "", 2, 0.0, 2.0))
+    with pytest.raises(ValueError, match="non-finite values"):
+        ab.load_histogram(path, "h")

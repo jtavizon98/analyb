@@ -288,6 +288,8 @@ class Hist1DRecord:
     is_density: bool = False
     underflow_error: Optional[float] = None
     overflow_error: Optional[float] = None
+    values_with_flow: object = None
+    variances_with_flow: object = None
 
 
 @dataclass(frozen=True)
@@ -323,6 +325,7 @@ def hist1d_record(hist):
         hist.counts, hist.edges, hist.errors, hist.unit,
         hist.overflow, hist.underflow, hist.is_density,
         hist.underflow_error, hist.overflow_error,
+        hist.values(flow=True), hist.variances(flow=True),
     )
 
 
@@ -340,6 +343,13 @@ def _record_histogram(record):
     from .histogram import Hist1D, Hist2D
 
     if isinstance(record, Hist1DRecord):
+        if record.values_with_flow is not None:
+            # Exact variances, as for 2D; errors would be squared back.
+            return Hist1D.from_flow(
+                record.values_with_flow, record.edges, record.variances_with_flow,
+                unit=record.unit, is_weighted=record.errors is not None,
+                is_density=record.is_density,
+            )
         return Hist1D(
             record.counts, record.edges, record.errors, unit=record.unit,
             overflow=record.overflow, underflow=record.underflow,
@@ -513,6 +523,8 @@ def _read_histogram(root_file, name, require_variances):
         )
     if np.any(~np.isfinite(variances)) or np.any(variances < 0):
         raise ValueError(f"{name!r} has invalid variances")
+    if not np.all(np.isfinite(values)):
+        raise ValueError(f"{name!r} has non-finite values (flow bins included)")
     axes = tuple(obj.axes)
     edges = tuple(np.asarray(axis.edges(), dtype=np.float64) for axis in axes)
     titles = tuple(str(axis.member("fTitle")) or None for axis in axes)
