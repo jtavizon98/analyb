@@ -124,3 +124,11 @@ def test_log_plotter_keeps_every_populated_bin_in_view():
     fig, ax = ab.hist1d_plot(ab.Hist1D(counts, edges), "N", label="sample", atlas=True, ylog=True)
     assert ax.get_ylim()[0] < 2.0 and ax.get_ylim()[1] > 1e5
     plt.close(fig)
+
+
+def test_caller_limits_after_a_plotter_keep_their_tick_labels():
+    fig, ax = ab.hist1d_plot(_tall_left_hist(), "x [GeV]", label="sample", atlas=True, ylog=True)
+    ax.set_ylim(1e-3, 1e4)   # the caller widens the view after the plotter returns
+    shown = [t for t in ax.get_yticks() if 1e-3 <= t <= 1e4]
+    assert np.allclose(shown, [1e-3, 1e-2, 1e-1, 1.0, 10.0, 1e2, 1e3, 1e4])
+    plt.close(fig)
