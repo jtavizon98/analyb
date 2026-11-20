@@ -17,8 +17,8 @@ def test_submodules_importable():
     import analyb.histogram
     import analyb.io
     import analyb.makelatex
-    import analyb.parallel
     import analyb.plot
+    import analyb.render
     import analyb.stats
     import analyb.units
     import analyb.variables

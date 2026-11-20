@@ -13,7 +13,7 @@ from . import style
 
 style.apply()
 
-from . import config, colors, binning, variables, io, histogram, comparison, stats, plot, cutflow, yieldtable, makelatex, units, parallel, provenance, figcheck, printed
+from . import config, colors, binning, variables, io, histogram, comparison, stats, plot, cutflow, yieldtable, makelatex, units, render, provenance, figcheck, printed
 
 try:
     from importlib.metadata import version as _metadata_version
@@ -40,10 +40,8 @@ from .io import (
     iterate_tree,
     save_hist_to_root, save_hist2d_to_root, load_histogram,
     extract_unit_from_latex_string,
-    save_histogram_cache, load_histogram_cache,
-    Hist1DRecord, Hist2DRecord, ProfileRecord, CompareRecord,
-    hist1d_record, hist2d_record,
 )
+from .render import render_many, RenderError
 from .histogram import (
     Hist1D, Hist2D,
     hist1d, hist2d, rebin, normalize, ratio, divide, Quotient, require_comparable,
@@ -88,7 +86,7 @@ from .style import plotbook_context
 __all__ = [
     "__version__",
     "config", "colors", "binning", "variables", "io", "histogram", "stats",
-    "plot", "comparison", "cutflow", "yieldtable", "parallel",
+    "plot", "comparison", "cutflow", "yieldtable", "render",
     "provenance", "figcheck", "printed",
     "set_script_id", "get_script_id", "set_save_path", "get_save_path",
     "set_data_path", "get_data_path",
@@ -104,9 +102,7 @@ __all__ = [
     "iterate_tree",
     "save_hist_to_root", "save_hist2d_to_root", "load_histogram",
     "extract_unit_from_latex_string",
-    "save_histogram_cache", "load_histogram_cache",
-    "Hist1DRecord", "Hist2DRecord", "ProfileRecord", "CompareRecord",
-    "hist1d_record", "hist2d_record",
+    "render_many", "RenderError",
     "Hist1D", "Hist2D", "hist1d", "hist2d", "rebin", "normalize", "ratio",
     "divide", "Quotient", "require_comparable",
     "sum_histograms", "sum_histograms2d",

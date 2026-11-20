@@ -23,6 +23,16 @@ def _get_registry():
     return reg
 
 
+def _extend_registry(entries):
+    """Append ``{script_id: [entry, ...]}`` captured elsewhere (render_many)."""
+    if not entries:
+        return
+    reg = dict(_get_registry())
+    for script_id, items in entries.items():
+        reg[script_id] = [*reg.get(script_id, []), *items]
+    _registry_var.set(reg)
+
+
 def register(script_id, section, filename, caption=None, width=0.45, label=None):
     """Register a plot entry for the LaTeX output."""
     reg = dict(_get_registry())

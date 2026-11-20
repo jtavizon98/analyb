@@ -1,4 +1,4 @@
-"""Test bounded-memory primitives: iterate_tree, 2D sum, chunked profile, workers."""
+"""Test bounded-memory primitives (iterate_tree, 2D sum, chunked profile) and ROOT write/read."""
 
 import os
 import tempfile
@@ -8,8 +8,6 @@ import pytest
 
 import analyb as ab
 import analyb.histogram as _hist
-import analyb.io as _io
-import analyb.parallel as _par
 
 
 # ---------------------------------------------------------------------------
@@ -482,93 +480,17 @@ def test_weighted_1d_chunk_merge():
     assert np.allclose(h_merged.errors, h_one.errors)
 
 
-# ---------------------------------------------------------------------------
-# default_max_workers
-# ---------------------------------------------------------------------------
-
-def test_default_max_workers_bounds():
-    """default_max_workers is int between 1 and 4 (inclusive)."""
-    workers = _par.default_max_workers()
-    assert isinstance(workers, int)
-    assert 1 <= workers <= 4
 
 
-def test_get_default_max_workers_sane():
-    """_get_default_max_workers returns a capped, positive value."""
-    w = _par._get_default_max_workers()
-    assert isinstance(w, int)
-    assert 1 <= w <= 4
 
 
-def test_default_max_workers_resolved_in_run_batch():
-    """When max_workers=None, _run_batch resolves to default_max_workers."""
-    assert _par.default_max_workers() == _par._get_default_max_workers()
 
 
-def test_all_batch_callers_supply_meaningful_progress_descriptions(monkeypatch):
-    """Every public batch entry point labels its tqdm/fallback counter."""
-    pl = pytest.importorskip("polars")
-    descriptions = []
-    monkeypatch.setattr(_par, "_run_batch", lambda *args, **kwargs: descriptions.append(kwargs["desc"]) or [])
-    df = pl.DataFrame({"x": [1.0], "y": [2.0], "eventWeight": [1.0]})
-    hist = ab.Hist1D(np.array([1.0]), np.array([0.0, 1.0]), errors=np.array([1.0]))
-
-    _par.hist1d_batch(df, [])
-    _par.hist2d_batch(df, [])
-    _par.profile_batch(df, [])
-    _par.compare_batch({"mc": df}, variables=[])
-    _par.replot_1d_batch({}, [])
-    _par.replot_2d_batch({}, [])
-    _par.replot_profile_batch({}, [])
-    _par.replot_compare_batch({"x": {"mc": {"mc": hist}}}, ["x"], plot_type="stacked", section="Stacked")
-
-    assert descriptions == [
-        "Fill 1D plots", "Fill 2D plots", "Plot profiles", "Data/MC overlay plots",
-        "Replot 1D histograms", "Replot 2D histograms", "Replot profiles",
-        "Replot Stacked (stacked)",
-    ]
 
 
-def test_sectioned_profile_cache_roundtrip(tmp_path):
-    key = "Profiles__ttbar_prof_mtlep_vs_met"
-    centers = np.array([0.5, 1.5])
-    means = np.array([2.0, 3.0])
-    stderr = np.array([0.2, 0.3])
-    result = _par.TaskResult(
-        name=key,
-        success=True,
-        root_name=key,
-        root_data=_io.ProfileRecord(centers, means, stderr),
-    )
-    cache_path = tmp_path / "cache.root"
-
-    ab.save_histogram_cache([result], file=cache_path)
-    loaded = ab.load_histogram_cache(file=cache_path)["profiles"][key]
-
-    assert np.allclose(loaded[0], centers)
-    assert np.allclose(loaded[1], means)
-    assert np.allclose(loaded[2], stderr)
 
 
-def test_histogram_cache_preserves_density_metadata(tmp_path):
-    result = _par.TaskResult(
-        name="density", success=True, root_name="density",
-        root_data=_io.Hist1DRecord(
-            np.array([2.0, 3.0]), np.array([0.0, 1.0, 3.0]),
-            np.array([1.0, 1.5]), r"\GeV", 4.0, 5.0, True,
-            underflow_error=2.5, overflow_error=2.0,
-        ),
-    )
-    cache_path = tmp_path / "cache.root"
 
-    ab.save_histogram_cache([result], file=cache_path)
-    loaded = ab.load_histogram_cache(file=cache_path)["hist1d"]["density"]
-
-    assert loaded.is_density
-    assert loaded.bin_width is None
-    np.testing.assert_allclose(loaded.counts, [2.0, 3.0])
-    assert (loaded.underflow, loaded.overflow) == (5.0, 4.0)
-    assert (loaded.underflow_error, loaded.overflow_error) == (2.5, 2.0)
 
 
 def test_root_histogram_roundtrip_preserves_density_metadata(tmp_path):
@@ -636,134 +558,18 @@ def test_root_update_ignores_stale_optional_sidecars_across_cycles(tmp_path):
     np.testing.assert_allclose(loaded.errors, [4.0])
 
 
-def test_histogram_cache_rejects_untyped_records_atomically(tmp_path):
-    destination = tmp_path / "cache.root"
-    result = _par.TaskResult(
-        name="legacy", success=True, root_name="legacy",
-        root_data=(np.array([1.0]), np.array([0.0, 1.0])),
-    )
-
-    with pytest.raises(TypeError, match="unsupported histogram record"):
-        ab.save_histogram_cache([result], file=destination)
-
-    assert not destination.exists()
 
 
-def test_output_writer_rejects_untyped_records(tmp_path):
-    ab.set_script_id("invalid-record")
-    ab.set_data_path(str(tmp_path))
-    result = _par.TaskResult(
-        name="legacy", success=True, root_name="legacy",
-        root_data=(np.array([1.0]), np.array([0.0, 1.0])),
-    )
-
-    with pytest.raises(TypeError, match="unsupported histogram record"):
-        _par._save_results_to_root([result])
 
 
-def test_compare_cache_ignores_root_directories_and_cycles(tmp_path):
-    hist_data = _io.Hist1DRecord(
-        np.array([3.0]),
-        np.array([0.0, 1.0]),
-        np.array([2.0]),
-        None,
-        5.0,
-        4.0,
-        underflow_error=1.0,
-        overflow_error=3.0,
-    )
-    result = _par.TaskResult(
-        name="met",
-        success=True,
-        root_name="met",
-        root_data=_io.CompareRecord({"ttbar": hist_data}, hist_data),
-    )
-    cache_path = tmp_path / "cache.root"
-
-    ab.save_histogram_cache([result], file=cache_path)
-    loaded = ab.load_histogram_cache(file=cache_path)["compare"]["met"]
-
-    assert set(loaded["mc"]) == {"ttbar"}
-    assert np.allclose(loaded["mc"]["ttbar"].counts, [3.0])
-    assert np.allclose(loaded["mc"]["ttbar"].errors, [2.0])
-    assert loaded["mc"]["ttbar"].overflow == 5.0
-    assert loaded["mc"]["ttbar"].underflow == 4.0
-    assert (loaded["mc"]["ttbar"].underflow_error, loaded["mc"]["ttbar"].overflow_error) == (1.0, 3.0)
-    assert np.allclose(loaded["data"].counts, [3.0])
 
 
-def test_nonsquare_hist2d_cache_roundtrip(tmp_path):
-    counts = np.arange(6.0).reshape(2, 3)
-    errors = np.arange(1.0, 7.0).reshape(2, 3)
-    x_edges = np.array([0.0, 1.0, 2.0])
-    y_edges = np.array([0.0, 1.0, 2.0, 3.0])
-    result = _par.TaskResult(
-        name="2d_njets_ht",
-        success=True,
-        root_name="2d_njets_ht",
-        root_data=_io.Hist2DRecord(counts, x_edges, y_edges, errors),
-    )
-    cache_path = tmp_path / "cache.root"
-
-    ab.save_histogram_cache([result], file=cache_path)
-    loaded = ab.load_histogram_cache(file=cache_path)["hist2d"]["2d_njets_ht"]
-
-    assert loaded.counts.shape == (2, 3)
-    assert np.array_equal(loaded.counts, counts)
-    assert np.array_equal(loaded.x_edges, x_edges)
-    assert np.array_equal(loaded.y_edges, y_edges)
-    assert np.array_equal(loaded.errors, errors)
 
 
-def test_square_hist2d_cache_preserves_asymmetric_orientation(tmp_path):
-    counts = np.array([[1.0, 2.0], [30.0, 40.0]])
-    errors = np.array([[0.5, 1.5], [2.5, 3.5]])
-    edges = np.array([0.0, 1.0, 2.0])
-    result = _par.TaskResult(
-        name="2d_square", success=True, root_name="2d_square",
-        root_data=_io.Hist2DRecord(counts, edges, edges, errors),
-    )
-    cache_path = tmp_path / "cache.root"
-
-    ab.save_histogram_cache([result], file=cache_path)
-    loaded = ab.load_histogram_cache(file=cache_path)["hist2d"]["2d_square"]
-
-    np.testing.assert_array_equal(loaded.counts, counts)
-    np.testing.assert_array_equal(loaded.errors, errors)
 
 
-def test_histogram_cache_stages_local_write_then_atomic_destination(tmp_path, monkeypatch, caplog):
-    """The completed local ROOT file is copied, then atomically installed."""
-    from analyb import io
-
-    result = _par.TaskResult(
-        name="x", success=True, root_name="x",
-        root_data=_io.Hist1DRecord(
-            np.array([2.0]), np.array([0.0, 1.0]), np.array([1.0]),
-        ),
-    )
-    copied, replaced = [], []
-    real_copy, real_replace = io.shutil.copyfile, io.os.replace
-    monkeypatch.setattr(io.shutil, "copyfile", lambda src, dst: (copied.append((src, dst)), real_copy(src, dst))[1])
-    monkeypatch.setattr(io.os, "replace", lambda src, dst: (replaced.append((src, dst)), real_replace(src, dst))[1])
-
-    cache_path = tmp_path / "cache.root"
-    with caplog.at_level("INFO"):
-        io.save_histogram_cache([result], file=cache_path)
-
-    assert copied and copied[0][0] != str(cache_path)
-    assert replaced == [(copied[0][1], str(cache_path))]
-    assert cache_path.exists()
-    assert "local write" in caplog.text and "copy" in caplog.text
 
 
-def test_histogram_cache_removes_destination_staging_file_on_copy_failure(tmp_path, monkeypatch):
-    from analyb import io
-
-    monkeypatch.setattr(io.shutil, "copyfile", lambda src, dst: (_ for _ in ()).throw(OSError("copy failed")))
-    with np.testing.assert_raises_regex(OSError, "copy failed"):
-        io.save_histogram_cache([], file=tmp_path / "cache.root")
-    assert not list(tmp_path.glob(".analyb-cache-*.root"))
 
 
 def test_files_from_the_sidecar_writer_are_refused(tmp_path):
@@ -836,3 +642,17 @@ def test_writer_refuses_what_the_reader_would_refuse(tmp_path):
                      bins=np.array([0.0, 1.0, 2.0]))
     with pytest.raises(ValueError, match="non-finite"):
         ab.save_hist_to_root("h", hist, file=tmp_path / "nan.root", mode="recreate")
+
+
+@pytest.mark.parametrize("x_edges, y_edges, counts", [
+    ([0.0, 1.0, 2.0], [0.0, 1.0, 2.0, 3.0], np.arange(6.0).reshape(2, 3)),
+    ([0.0, 1.0, 2.0], [0.0, 1.0, 2.0], np.array([[1.0, 2.0], [30.0, 40.0]])),
+])
+def test_written_2d_histograms_keep_their_orientation(tmp_path, x_edges, y_edges, counts):
+    hist = ab.Hist2D(counts, x_edges, y_edges, errors=np.sqrt(counts) + 0.5)
+    ab.save_hist2d_to_root("g", hist, file=tmp_path / "g.root", mode="recreate")
+    loaded = ab.load_histogram(tmp_path / "g.root", "g")
+    np.testing.assert_array_equal(loaded.counts, hist.counts)
+    np.testing.assert_array_equal(loaded.errors, hist.errors)
+    np.testing.assert_array_equal(loaded.x_edges, hist.x_edges)
+    np.testing.assert_array_equal(loaded.y_edges, hist.y_edges)

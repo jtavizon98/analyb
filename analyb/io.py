@@ -1,13 +1,7 @@
 """Input/output: TTree loading (polars), histogram persistence in ROOT files."""
 
-import logging
 import os
 import re
-import shutil
-import tempfile
-import time
-from dataclasses import dataclass
-from typing import Optional
 
 try:
     import uproot
@@ -262,111 +256,6 @@ def _read_density_metadata(root_file, name):
     return bool(values[0])
 
 
-def _write_sidecar_presence(root_file, name, sidecar, present):
-    root_file[f"{name}__analyb_{sidecar}_present"] = (
-        np.asarray([bool(present)], dtype=np.int8), np.asarray([0.0, 1.0]),
-    )
-
-
-def _sidecar_is_current(root_file, name, sidecar):
-    """Read current-record metadata, falling back for pre-metadata files."""
-    marker = f"{name}__analyb_{sidecar}_present"
-    if marker not in root_file:
-        return f"{name}__{sidecar}" in root_file
-    values, _ = root_file[marker].to_numpy()
-    return bool(values[0])
-
-
-@dataclass(frozen=True)
-class Hist1DRecord:
-    counts: object
-    edges: object
-    errors: object = None
-    unit: Optional[str] = None
-    overflow: float = 0.0
-    underflow: float = 0.0
-    is_density: bool = False
-    underflow_error: Optional[float] = None
-    overflow_error: Optional[float] = None
-    values_with_flow: object = None
-    variances_with_flow: object = None
-
-
-@dataclass(frozen=True)
-class Hist2DRecord:
-    counts: object
-    x_edges: object
-    y_edges: object
-    errors: object = None
-    x_unit: Optional[str] = None
-    y_unit: Optional[str] = None
-    values_with_flow: object = None
-    variances_with_flow: object = None
-
-
-@dataclass(frozen=True)
-class ProfileRecord:
-    centers: object
-    means: object
-    stderr: object = None
-    x_unit: Optional[str] = None
-    y_unit: Optional[str] = None
-
-
-@dataclass(frozen=True)
-class CompareRecord:
-    mc: dict
-    data: Optional[Hist1DRecord] = None
-
-
-def hist1d_record(hist):
-    """Return the explicit persistence record for a Hist1D, flows included."""
-    return Hist1DRecord(
-        hist.counts, hist.edges, hist.errors, hist.unit,
-        hist.overflow, hist.underflow, hist.is_density,
-        hist.underflow_error, hist.overflow_error,
-        hist.values(flow=True), hist.variances(flow=True),
-    )
-
-
-def hist2d_record(hist):
-    """Return the explicit persistence record for a Hist2D, flows included."""
-    return Hist2DRecord(
-        hist.counts, hist.x_edges, hist.y_edges, hist.errors,
-        hist.x_unit, hist.y_unit,
-        hist.values(flow=True), hist.variances(flow=True),
-    )
-
-
-def _record_histogram(record):
-    """The Hist1D/Hist2D a record describes."""
-    from .histogram import Hist1D, Hist2D
-
-    if isinstance(record, Hist1DRecord):
-        if record.values_with_flow is not None:
-            # Exact variances, as for 2D; errors would be squared back.
-            return Hist1D.from_flow(
-                record.values_with_flow, record.edges, record.variances_with_flow,
-                unit=record.unit, is_weighted=record.errors is not None,
-                is_density=record.is_density,
-            )
-        return Hist1D(
-            record.counts, record.edges, record.errors, unit=record.unit,
-            overflow=record.overflow, underflow=record.underflow,
-            overflow_error=record.overflow_error, underflow_error=record.underflow_error,
-            is_weighted=record.errors is not None, is_density=record.is_density,
-        )
-    if record.values_with_flow is not None:
-        return Hist2D.from_flow(
-            record.values_with_flow, record.x_edges, record.y_edges,
-            record.variances_with_flow, x_unit=record.x_unit, y_unit=record.y_unit,
-        )
-    return Hist2D(
-        record.counts, record.x_edges, record.y_edges, record.errors,
-        x_unit=record.x_unit, y_unit=record.y_unit,
-    )
-
-
 def _axis(name, edges):
     from uproot.writing.identify import to_TAxis
 
@@ -413,55 +302,7 @@ def _write_native(root_file, name, hist, has_sumw2):
     )
 
 
-def _profile_edges(centers):
-    centers = np.asarray(centers, dtype=np.float64)
-    if not len(centers):
-        raise ValueError("cannot persist a profile without bin centers")
-    half_widths = np.diff(centers) / 2 if len(centers) > 1 else np.array([0.5])
-    edges = np.empty(len(centers) + 1)
-    edges[0] = centers[0] - half_widths[0]
-    edges[-1] = centers[-1] + half_widths[-1]
-    if len(centers) > 1:
-        edges[1:-1] = centers[:-1] + half_widths
-    return edges
-
-
-def write_histogram_record(root_file, name, record):
-    """Write one typed histogram record to an open ROOT file.
-
-    Hist1D and Hist2D records become ordinary ROOT TH1D/TH2D objects with
-    their flow bins and, when the record has errors, fSumw2; ``load_histogram``
-    reads them back exactly. A density marker key records Hist1D
-    differential normalization, which ROOT has no field for.
-    """
-    if isinstance(record, (Hist1DRecord, Hist2DRecord)):
-        _write_native(root_file, name, _record_histogram(record), record.errors is not None)
-        if isinstance(record, Hist1DRecord):
-            _write_density_metadata(root_file, name, record.is_density)
-        return
-
-    if isinstance(record, ProfileRecord):
-        edges = _profile_edges(record.centers)
-        root_file[name] = np.asarray(record.means, dtype=np.float64), edges
-        if record.stderr is not None:
-            root_file[f"{name}__stderr"] = (
-                np.asarray(record.stderr, dtype=np.float64), edges,
-            )
-        _write_sidecar_presence(root_file, name, "stderr", record.stderr is not None)
-        return
-
-    if isinstance(record, CompareRecord):
-        for sample, histogram in record.mc.items():
-            write_histogram_record(root_file, f"compare/{name}/mc/{sample}", histogram)
-        if record.data is not None:
-            write_histogram_record(root_file, f"compare/{name}/data", record.data)
-        return
-
-    raise TypeError(f"unsupported histogram record: {type(record).__name__}")
-
-
-def save_histogram_record(name, record, file=None, mode="update"):
-    """Persist one typed record using the same writer as histogram caches."""
+def _save_native(name, hist, has_sumw2, file, mode):
     _require_uproot()
     if file is None:
         from . import config
@@ -469,31 +310,36 @@ def save_histogram_record(name, record, file=None, mode="update"):
         file = config.get_output_root()
     os.makedirs(os.path.dirname(file) or ".", exist_ok=True)
     with _rootsavebook(file, mode) as root_file:
-        write_histogram_record(root_file, name, record)
+        _write_native(root_file, name, hist, has_sumw2)
+        if not hasattr(hist, "x_edges"):
+            _write_density_metadata(root_file, name, hist.is_density)
 
 
 def save_hist_to_root(name, hist, file=None, mode="update"):
-    """Save a 1D histogram (Hist1D or (counts, edges) tuple) into a ROOT file."""
+    """Save a Hist1D, or a ``(counts, edges)`` tuple, as a ROOT TH1D.
+
+    A Hist1D is written with its flow bins and fSumw2, so ``load_histogram``
+    reads it back exactly; a tuple is written without fSumw2 (unweighted).
+    A density marker key records differential normalization.
+    """
     from .histogram import Hist1D
 
     if isinstance(hist, Hist1D):
-        record = hist1d_record(hist)
+        _save_native(name, hist, True, file, mode)
     else:
         counts, edges = hist
-        record = Hist1DRecord(counts, edges)
-    save_histogram_record(name, record, file=file, mode=mode)
+        _save_native(name, Hist1D(counts, edges), False, file, mode)
 
 
 def save_hist2d_to_root(name, hist, file=None, mode="update"):
-    """Save a 2D histogram (Hist2D or (counts, x_edges, y_edges)) into a ROOT file."""
+    """Save a Hist2D, or a ``(counts, x_edges, y_edges)`` tuple, as a ROOT TH2D."""
     from .histogram import Hist2D
 
     if isinstance(hist, Hist2D):
-        record = hist2d_record(hist)
+        _save_native(name, hist, True, file, mode)
     else:
         counts, xe, ye = hist
-        record = Hist2DRecord(counts, xe, ye)
-    save_histogram_record(name, record, file=file, mode=mode)
+        _save_native(name, Hist2D(counts, xe, ye), False, file, mode)
 
 
 def _read_histogram(root_file, name, require_variances):
@@ -557,130 +403,6 @@ def load_histogram(file, name, *, require_variances=True):
     _require_uproot()
     with uproot.open(file) as root_file:
         return _read_histogram(root_file, name, require_variances)
-
-
-# --------------------------------------------------------------------------
-# Histogram cache: save / load all batch results for replotting
-# --------------------------------------------------------------------------
-
-
-def get_cache_path(file=None):
-    """Return the cache ROOT file path derived from the output root path."""
-    if file is not None:
-        return file
-    from . import config
-    out_root = config.get_output_root()
-    return out_root.replace("-output.root", "-cache.root")
-
-
-def save_histogram_cache(results, file=None) -> str:
-    """Save all batch results (TaskResult list) to a ROOT cache file.
-
-    The cache file is the per-script cache ROOT file
-    (``{save_path}/{script_id}-cache.root``).  All histogram types (1D, 2D,
-    profiles, compare) are stored under the same keys used by the output
-    ROOT file.
-    """
-    _require_uproot()
-    cache_path = os.fspath(get_cache_path(file))
-    os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
-    logger = logging.getLogger(__name__)
-    started = time.monotonic()
-    # /tmp is host-local on the supported analysis hosts; do not inherit a
-    # potentially remote TMPDIR when the destination is an SSHFS/Ceph mount.
-    local_fd, local_path = tempfile.mkstemp(prefix="analyb-cache-", suffix=".root", dir="/tmp")
-    os.close(local_fd)
-    destination_path = None
-
-    try:
-        with _rootsavebook(local_path, "recreate") as f:
-            for r in results:
-                if not r.success or r.root_data is None:
-                    continue
-                write_histogram_record(f, r.root_name, r.root_data)
-
-        write_seconds = time.monotonic() - started
-        destination_fd, destination_path = tempfile.mkstemp(
-            prefix=".analyb-cache-", suffix=".root", dir=os.path.dirname(cache_path) or ".",
-        )
-        os.close(destination_fd)
-        copy_started = time.monotonic()
-        shutil.copyfile(local_path, destination_path)
-        # The staging file is in the destination directory, so replacement is
-        # atomic on filesystems that support os.replace (including local POSIX).
-        os.replace(destination_path, cache_path)
-        destination_path = None
-        copy_seconds = time.monotonic() - copy_started
-    finally:
-        for path in (local_path, destination_path):
-            if path is not None:
-                try:
-                    os.unlink(path)
-                except FileNotFoundError:
-                    pass
-
-    logger.info("Saved histogram cache: %s (local write %.2fs, copy %.2fs, total %.2fs)",
-                cache_path, write_seconds, copy_seconds, time.monotonic() - started)
-    return cache_path
-
-
-def load_histogram_cache(file=None):
-    """Load all histograms from a cache ROOT file.
-
-    Returns a dict with keys:
-    - ``"hist1d"``: ``{var_name: Hist1D, ...}``
-    - ``"hist2d"``: ``{key: Hist2D, ...}``
-    - ``"profiles"``: ``{key: (centers, means, stderr), ...}``
-    - ``"compare"``: ``{var: {"mc": {name: Hist1D, ...}, "data": Hist1D or None}, ...}``
-    """
-    _require_uproot()
-    from .histogram import Hist1D, Hist2D
-
-    cache_path = get_cache_path(file)
-
-    result = {
-        "hist1d": {},
-        "hist2d": {},
-        "profiles": {},
-        "compare": {},
-    }
-
-    if not os.path.exists(cache_path):
-        raise FileNotFoundError(f"Cache file not found: {cache_path}")
-
-    with uproot.open(cache_path) as f:
-        for raw_key, classname in f.classnames().items():
-            key = raw_key.rsplit(";", 1)[0]
-            if key.endswith(("__stderr", "__analyb_density", "__analyb_stderr_present")):
-                continue
-            if not (classname.startswith("TH1") or classname.startswith("TH2")):
-                continue
-            if key.startswith("compare/"):
-                parts = key.split("/")
-                if len(parts) >= 3:
-                    entry = result["compare"].setdefault(parts[1], {"mc": {}, "data": None})
-                    histogram = _read_histogram(f, key, require_variances=False)
-                    if len(parts) >= 4 and parts[2] == "mc":
-                        entry["mc"][parts[3]] = histogram
-                    elif parts[2] == "data":
-                        entry["data"] = histogram
-                continue
-            if key.startswith("prof_") or "_prof_" in key:
-                means, edges = f[raw_key].to_numpy()
-                stderr = None
-                if _sidecar_is_current(f, key, "stderr"):
-                    stderr, _ = f[f"{key}__stderr"].to_numpy()
-                result["profiles"][key] = ((edges[:-1] + edges[1:]) / 2, means, stderr)
-                continue
-            histogram = _read_histogram(f, key, require_variances=False)
-            if key.startswith("2d_"):
-                result["hist2d"][key] = histogram
-            else:
-                result["hist1d"][key] = histogram
-
-    logger = logging.getLogger(__name__)
-    logger.info("Loaded histogram cache: %s", cache_path)
-    return result
 
 
 # --------------------------------------------------------------------------
