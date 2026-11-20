@@ -116,3 +116,11 @@ def test_caller_limits_stand_unless_the_label_would_cover_data():
                                         ylim=(0.0, 1.05), atlas=True)
     assert main.get_ylim() == (0.0, 1.05)   # nothing covered: the caller's range stands
     plt.close(fig)
+
+
+def test_log_plotter_keeps_every_populated_bin_in_view():
+    edges = np.arange(7.0)
+    counts = np.array([1e5, 3e4, 50.0, 2.0, 0.0, 0.0])   # the bin at 2 lies far under the log core
+    fig, ax = ab.hist1d_plot(ab.Hist1D(counts, edges), "N", label="sample", atlas=True, ylog=True)
+    assert ax.get_ylim()[0] < 2.0 and ax.get_ylim()[1] > 1e5
+    plt.close(fig)
