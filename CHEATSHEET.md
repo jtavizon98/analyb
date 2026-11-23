@@ -388,9 +388,9 @@ The ATLAS label is always placed at the upper-left corner of the axes
 end with ``fit_overlay_headroom`` on the main axes, after the data, scale,
 legend, label and ratio panel: the top is the one the save-time check accepts
 (see "Figure lint"). A ``ylim`` the caller passes (``efficiency_plot``) stands
-unless a legend or label would cover data under it. The plotter keeps its own
-floor on log axes (every populated bin stays in view) and its tick locator, so a
-caller may still change the limits. Legends are frameless and
+unless a legend or label would cover data under it. On log axes the fit's floor
+rule applies (every populated bin stays in view); the plotter keeps its tick
+locator, so a caller may still change the limits. Legends are frameless and
 inset inside the upper-right corner.
 
 ### Final annotation headroom (after overlays and scale)
