@@ -21,3 +21,12 @@ def test_a_host_matplotlibrc_does_not_reach_analyb_figures(tmp_path):
     personal = _rc_after_import(tmp_path / "b", "lines.markersize: 20\nfont.size: 30\nlegend.handlelength: 9\n"
                                                 "axes.titlesize: xx-large\n")
     assert plain == personal == [4.0, 12.0, 1.5, "medium"]
+
+
+def test_default_data_markers_are_filled():
+    import matplotlib.pyplot as plt
+    import analyb as ab
+    fig, ax = plt.subplots()
+    ax.plot([1, 2, 3], [1, 2, 3], "o")
+    assert not [f for f in ab.check_figure(fig) if f.check == "marker-hollow"]
+    plt.close(fig)

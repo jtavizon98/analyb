@@ -14,11 +14,11 @@ from analyb import config
 
 @pytest.fixture(autouse=True)
 def _analyb_style_on_matplotlib_defaults():
-    """Measure against analyb's style, at the 10 pt base font and filled default markers the expected geometry and
-    findings below were calibrated with."""
+    """Measure against analyb's style, at the 10 pt base font the expected geometry and findings below were
+    calibrated with."""
     with matplotlib.rc_context():
         ab.style.apply()
-        matplotlib.rcParams.update({"font.size": 10, "lines.markerfacecolor": "auto"})
+        matplotlib.rcParams.update({"font.size": 10})
         yield
     config.set_figure_check(None)
     config.set_figure_final_width_cm(None)
