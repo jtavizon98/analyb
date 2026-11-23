@@ -450,7 +450,7 @@ helper, call it after the final limits, scales and overlays:
 | `axis-unlabelled`: a visible x or y axis shows tick labels but has no axis label (a shared x axis with hidden tick labels needs none) | fail | `None` |
 | `font-below-floor`: base font size scaled to `final_width_cm` is below `min_font_pt` (5 pt); skipped without a final width | fail | effective size, pt |
 | `font-below-advisory`: scaled size at least `min_font_pt` but below `flag_font_pt` (7 pt) | flag | effective size, pt |
-| `log-range`: a log y axis leaves more than 1.5 (flag) or 3 (fail) empty decades below the smallest core value (values at least 1e-4 of the maximum, so sparse tail bins do not hold the floor open), or more than 3.5 (flag) or 5 (fail) above the largest value (3.5 decades are the legend/label allowance); a log x axis: more than 1 (flag) or 2 (fail) beyond either end of the data. Error bars count as data | flag / fail | worst excess, decades |
+| `log-range`: a log y axis leaves more than 1.5 (flag) or 3 (fail) empty decades below the lowest populated value (histogram steps, bars, data lines and markers; error bars, caps, bands and fills are uncertainty, not population), or a populated value under the floor (flag: every populated bin stays in view), or more than 3.5 (flag) or 5 (fail) above the largest value (3.5 decades are the legend/label allowance; error bars count there); a log x axis: more than 1 (flag) or 2 (fail) beyond either end of the data | flag / fail | worst excess, decades |
 | `marker-oversize`: marker diameter (size plus edge width) over the median spacing of the marker x positions (the bin width), for lines/errorbars with at least 3 positions; scale-free, so it needs no final width | flag above 0.75, fail above 1.0 | ratio |
 | `marker-hollow`: a line or errorbar draws a filled marker shape (circle, square, triangle) with a visible edge but no face, or with the axes background colour as face (a white face on white axes, as `lines.markerfacecolor: white` in an rc file produces); see Data-marker style. Stroke markers (`x`, `+`) and scatter are not checked | fail | `None` |
 
@@ -489,8 +489,9 @@ fraction on a linear or symlog one, measured in the axis scale), at most `cap` d
 uses; over the cap the gap is dropped and a larger need is kept, so the check
 fails it). With no box over the data the highest value still keeps a margin
 inside the frame: 0.03 decades on a log axis, 2 % of the axes height on a
-linear or symlog one. On a log axis it raises a floor more than 1.2 decades under the core
-to 0.3 decades under it, inside the same loop, so a floor raised later cannot
+linear or symlog one. On a log axis it raises a floor more than 1.2 decades under the
+lowest populated value (`core`: steps, bars, data lines and markers, not error bars or
+bands) to 0.3 decades under it, never above a populated value, inside the same loop, so a floor raised later cannot
 stretch the headroom. It measures at 72 dpi (the PDF layout dpi; the figure's dpi
 is restored) and repeats until the limits stop moving, so a second call changes
 nothing: call it again after anything that moves the layout. It returns the

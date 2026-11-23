@@ -2,7 +2,7 @@
 
 ``fit_overlay_headroom`` sets the limit the ``log-headroom`` figure check accepts: it measures with the check's own
 rule (:func:`analyb.figcheck.overlay_need`), so a fitted figure and the check cannot disagree on the geometry. On a log
-axis it also raises a floor that sits far under the populated core, inside the same loop, so a floor raised after the
+axis it also raises a floor that sits far under the lowest populated value, never above it, inside the same loop, so a floor raised after the
 fit cannot stretch the headroom.
 """
 
@@ -16,8 +16,8 @@ GAP_DECADES = 0.1      # log: decades added above the need, so each box clears t
 GAP_FRACTION = 0.02    # linear: axes fraction each box keeps above the data under it
 DATA_MARGIN = 0.03     # log: decades kept above the highest data value, so it lies inside the axes
 DATA_FRACTION = 0.02   # linear, symlog: axes fraction kept above the highest data value, for the same reason
-FLOOR_BELOW_MAX = 1.2  # log: a floor farther than this many decades under the core is raised (log-range flags above 1.5)
-FLOOR_MARGIN = 0.3     # log: decades between a raised floor and the smallest core value
+FLOOR_BELOW_MAX = 1.2  # log: a floor farther than this many decades under the lowest populated value is raised (log-range flags above 1.5)
+FLOOR_MARGIN = 0.3     # log: decades between a raised floor and the lowest populated value
 TOP_TICK_ROOM = 0.06   # share of the span under the top kept free of tick labels
 _PASSES = 5
 _RULES = object()
@@ -77,8 +77,9 @@ def fit_overlay_headroom(ax, *, floor=None, cap=_RULES, gap=None, raise_floor=Tr
         Room above the need: decades on a log axis (default ``GAP_DECADES``), axes fraction on a linear or symlog one
         (default ``GAP_FRACTION``).
     raise_floor : bool
-        Log axes: raise a floor more than ``FLOOR_BELOW_MAX`` decades under the populated core to ``FLOOR_MARGIN`` under
-        it (the core of the ``log-range`` check).
+        Log axes: raise a floor more than ``FLOOR_BELOW_MAX`` decades under the lowest populated value (``OverlayNeed.core``,
+        the reference of the ``log-range`` check) to ``FLOOR_MARGIN`` under it. A floor above a populated value is left
+        alone (the check flags it).
     prune_ticks : bool
         Drop tick labels within ``TOP_TICK_ROOM`` of the span under the top; on a log axis hide minor tick labels.
 

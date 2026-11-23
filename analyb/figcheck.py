@@ -24,7 +24,8 @@ from dataclasses import asdict, dataclass
 import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.axis import Axis
-from matplotlib.collections import LineCollection, PathCollection, QuadMesh
+from matplotlib.collections import LineCollection, PathCollection, PolyCollection, QuadMesh
+from matplotlib.container import ErrorbarContainer
 from matplotlib.colors import to_rgba, to_rgba_array
 from matplotlib.figure import SubFigure
 from matplotlib.legend import Legend
@@ -46,12 +47,9 @@ MIN_FONT_PT = 5.0
 FLAG_FONT_PT = 7.0
 """Advisory font size at final placement (``font-below-advisory``)."""
 
-LOG_CORE_FRACTION = 1e-4
-"""``log-range``: a value is core when it is at least this fraction of the
-largest plotted value; sparse tail bins below it never set the reference."""
 LOG_BELOW_FLAG = 1.5
 LOG_BELOW_FAIL = 3.0
-"""``log-range``: decades of empty axis below the smallest core value."""
+"""``log-range``: decades of empty axis below the lowest populated value (:func:`_populated`)."""
 LOG_ABOVE_FLAG = 3.5
 LOG_ABOVE_FAIL = 5.0
 """``log-range``: decades of empty axis above the largest value; the first
@@ -466,13 +464,34 @@ def _decades(hi, lo):
     return float(np.log10(hi) - np.log10(lo))
 
 
-def _axis_content(ax, axis_name, positive=True):
-    """Finite data values plotted along ``axis_name`` (all artists); only the positive ones by default (log axes)."""
+def _uncertainty_artists(ax):
+    """ids of the artists that draw uncertainty extents: errorbar bars and caps, and every collection that is not a
+    scatter (fill_between bands and fills, vlines and hlines)."""
+    found = {id(c) for c in ax.collections if not isinstance(c, PathCollection) or isinstance(c, PolyCollection)}
+    for container in ax.containers:
+        if isinstance(container, ErrorbarContainer):
+            _, caps, bars = container.lines
+            found.update(map(id, (*(caps or ()), *(bars or ()))))
+    return found
+
+
+def _populated(ax):
+    """Positive y values of the populated content: histogram steps, bars, data lines and markers, scatter points; not
+    error bars, caps, bands or fills (their lower ends are uncertainty, not population). Values drawn to a y limit
+    are left out (see :func:`_axis_content`)."""
+    return _axis_content(ax, "y", skip=_uncertainty_artists(ax))
+
+
+def _axis_content(ax, axis_name, positive=True, skip=()):
+    """Finite data values plotted along ``axis_name`` (all artists but those whose id is in ``skip``); only the
+    positive ones by default (log axes)."""
     inv = ax.transData.inverted()
     limits = ax.get_ylim() if axis_name == "y" else ax.get_xlim()
     col = 1 if axis_name == "y" else 0
     values = []
     for artist, kind, shapes in _data_shapes(ax, along=axis_name):
+        if id(artist) in skip:
+            continue
         for shape in shapes:
             pts = shape.vertices if hasattr(shape, "vertices") else np.asarray(shape)
             pts = pts[np.all(np.isfinite(pts), axis=1)]
@@ -500,8 +519,11 @@ def _log_range_findings(ax, index, dpi):
         if not v.size or lo <= 0:
             continue
         top = float(v.max())
+        hidden = np.empty(0)
         if name == "y":
-            core = float(v[v >= LOG_CORE_FRACTION * top].min())
+            populated = _populated(ax)
+            core = float(populated.min()) if populated.size else float(v.min())
+            hidden = populated[populated < lo]
             below_flag, below_fail = LOG_BELOW_FLAG, LOG_BELOW_FAIL
             above_flag, above_fail = LOG_ABOVE_FLAG, LOG_ABOVE_FAIL
         else:
@@ -509,7 +531,7 @@ def _log_range_findings(ax, index, dpi):
             below_flag = above_flag = LOG_X_FLAG
             below_fail = above_fail = LOG_X_FAIL
         below, above = max(_decades(core, lo), 0.0), max(_decades(hi, top), 0.0)
-        severity = None
+        severity = "flag" if hidden.size else None
         for excess, flag, fail in ((below, below_flag, below_fail), (above, above_flag, above_fail)):
             if excess > fail:
                 severity = "fail"
@@ -518,12 +540,13 @@ def _log_range_findings(ax, index, dpi):
         if severity is None:
             continue
         worst = max(below, above)
-        what = "core (values >= %.0e of the maximum)" % LOG_CORE_FRACTION if name == "y" else "extent"
-        found.append(Finding(
-            "log-range", severity, f"axes[{index}] {name} axis", box, round(worst, 2),
-            f"log {name} axis spans {lo:.3g} to {hi:.3g}; plotted {what} "
-            f"{core:.3g} to {top:.3g}: {below:.1f} empty decades below, {above:.1f} above",
-        ))
+        what = "populated values" if name == "y" else "extent"
+        message = (f"log {name} axis spans {lo:.3g} to {hi:.3g}; plotted {what} "
+                   f"{core:.3g} to {top:.3g}: {below:.1f} empty decades below, {above:.1f} above")
+        if hidden.size:
+            message += (f"; populated values down to {float(hidden.min()):.3g} lie under the floor "
+                        f"({_decades(lo, float(hidden.min())):.1f} decades under it)")
+        found.append(Finding("log-range", severity, f"axes[{index}] {name} axis", box, round(worst, 2), message))
     return found
 
 
@@ -713,8 +736,8 @@ class OverlayNeed:
     """What the legends and texts hung from the top of one axes need along y (see :func:`overlay_need`).
 
     All values are in data units. ``upper`` is at least ``top``; ``binding`` names the box that sets it (None when no box
-    reaches the data top). ``core`` (log axes) is the smallest plotted value at least ``LOG_CORE_FRACTION`` of ``top`` and
-    not under ``floor``; None when no such value is shown.
+    reaches the data top). ``core`` (log axes) is the lowest populated value (steps, bars, data lines and markers, not
+    error bars or bands), also when it lies under ``floor``; None when the axes has none.
     """
     scale: str
     floor: float
@@ -795,8 +818,8 @@ def _overlay_need(ax, items, floor=None, pad=0.0, boxes=False):
         box_top = needed if box_top is None else max(box_top, needed)
         if needed > need_top:
             need_top, reason = needed, item.where
-    shown = v[v >= max(LOG_CORE_FRACTION * top, lo)]   # under the floor: hidden, or a marker drawn to an earlier floor
-    core = float(shown.min()) if log and shown.size else None
+    populated = _populated(ax) if log else np.empty(0)
+    core = float(populated.min()) if populated.size else None
     need = OverlayNeed(scale, lo, top, from_scale(need_top), reason, core)
     if not boxes:
         return need
@@ -896,11 +919,11 @@ def check_figure(fig, *, final_width_cm=None, min_font_pt=MIN_FONT_PT, flag_font
       the limits leave excess empty decades around the plotted content
       (visible lines, errorbar and step/bar artists, collections; legends
       and invisible artists excluded; error bars count as content; reference
-      lines such as ``axhline`` do too).  y: the core is the set of positive
-      values at least ``LOG_CORE_FRACTION`` (1e-4) of the largest, so sparse
-      tail bins do not hold the floor open.  Decades from the axis bottom up
-      to the smallest core value: flag above ``LOG_BELOW_FLAG`` (1.5), fail
-      above ``LOG_BELOW_FAIL`` (3).  Decades from the largest value to the
+      lines and bands spanning the frame do not).  y: decades from the axis
+      bottom up to the lowest populated value (histogram steps, bars, data
+      lines and markers; not error bars, caps, bands or fills): flag above
+      ``LOG_BELOW_FLAG`` (1.5), fail above ``LOG_BELOW_FAIL`` (3); a populated
+      value under the bottom is a flag (every populated bin stays in view).  Decades from the largest value to the
       axis top: flag above ``LOG_ABOVE_FLAG`` (3.5, the allowance for legend and
       label headroom), fail above ``LOG_ABOVE_FAIL`` (5).  x: no core; decades
       beyond either end of the plotted extent, flag above 1, fail above 2.

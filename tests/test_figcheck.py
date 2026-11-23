@@ -647,14 +647,27 @@ def test_log_range_flags_moderate_headroom_and_fails_extreme():
     assert fails[0].value > 8 and "above" in fails[0].message
 
 
-def test_log_range_measures_the_floor_from_core_not_from_sparse_tail_bins():
+def test_log_range_keeps_every_populated_bin_in_view():
     y = 10 ** (1 + 3 * np.exp(-0.5 * ((np.arange(20) + 0.5 - 10) / 4) ** 2))
-    y[0], y[19] = 3e-3, 2e-2  # sparse tail bins, far below 1e-4 of the peak
-    fig, _ = _log_axes((1e-3, 3e4), y)
-    findings = _range(fig)
-    assert [f.severity for f in findings] == ["fail"]  # floor 1e-3 against core 14
-    assert "below" in findings[0].message
-    fig, _ = _log_axes((1.0, 3e4), y)  # the tail bins are not the reference
+    y[0], y[19] = 3e-3, 2e-2  # sparse tail bins, far below the peak: still populated
+    fig, _ = _log_axes((1e-3, 3e4), y, kind="step")  # 0.5 decades under the lowest bin
+    assert _range(fig) == []
+    fig, _ = _log_axes((1.0, 3e4), y, kind="step")  # hides the two tail bins
+    hidden = _range(fig)
+    assert [f.severity for f in hidden] == ["flag"]
+    assert "populated values down to 0.003 lie under the floor" in hidden[0].message
+    fig, _ = _log_axes((1e-7, 3e4), y, kind="step")  # 4.5 decades under the lowest bin
+    assert [f.severity for f in _range(fig)] == ["fail"]
+
+
+def test_log_range_does_not_count_error_bar_or_band_lower_ends_as_population():
+    fig, ax = plt.subplots(figsize=(4, 3), layout="none")
+    x = np.arange(20) + 0.5
+    y = 10 ** (1 + 3 * np.exp(-0.5 * ((x - 10) / 4) ** 2))
+    ax.errorbar(x, y, yerr=0.999 * y, fmt="o", color="k")  # lower ends three decades under each point
+    ax.fill_between(x, y * 1e-4, y * 2, alpha=0.3)       # a band reaching four decades under
+    ax.set_yscale("log")
+    ax.set_ylim(y.min() * 10 ** -0.3, 3e4)
     assert _range(fig) == []
 
 

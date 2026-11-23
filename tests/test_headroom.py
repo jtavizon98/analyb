@@ -193,16 +193,16 @@ def test_axes_that_cannot_be_fitted_are_left_alone():
 
 def test_a_marker_drawn_up_from_the_floor_is_not_the_core():
     # r23 daod-polish event-ratio figures: vlines(1, floor, top) marks the reference; its end on the floor is not data,
-    # so the floor far under the populated core is still raised (and the check still sees the empty decades)
+    # so the floor far under the lowest populated value is still raised (and the check still sees the empty decades)
     edges = np.linspace(0, 300, 31)
     y = 2e3 * np.exp(-0.5 * ((0.5 * (edges[1:] + edges[:-1]) - 100) / 30) ** 2) + 20   # core 20, top 2e3
     fig, ax = _figure(edges, y, loc="upper right")
-    floor = 0.5   # above 1e-4 of the top: a value there would count as core; 1.6 decades under the real core
+    floor = 0.5   # 1.6 decades under the lowest populated value (20); the vlines reaching it are not population
     ax.vlines(150.0, floor, y.max(), color="k", ls=":")
     ax.set_ylim(floor, y.max())
     assert any(c == "log-range" for c, _ in _range_findings(fig, cap=None))
     need = ab.fit_overlay_headroom(ax)
-    assert need.core == pytest.approx(y[y >= 1e-4 * y.max()].min(), rel=1e-6)
+    assert need.core == pytest.approx(y.min(), rel=1e-6)   # the lowest populated value; the vlines are not population
     assert np.log10(need.core / ax.get_ylim()[0]) == pytest.approx(0.3)
     assert _range_findings(fig) == []
 
@@ -261,4 +261,18 @@ def test_the_highest_data_point_stays_inside_the_frame_without_a_box_over_it(sca
     assert (s(np.array([53.0]))[0] - lo) / (hi - lo) == pytest.approx(1 - ab.headroom.DATA_FRACTION, abs=1e-6)
     if scale == "linear":
         assert 50 in ax.get_yticks()   # the 50 label is no longer at the top edge
+    plt.close(fig)
+
+
+def test_the_fit_keeps_every_populated_bin_in_view():
+    # review input: two populated bins five decades under the peak were cut by a floor raised under a 1e-4-of-peak core
+    edges = np.arange(8.0)
+    y = np.array([2e5, 8e4, 6e3, 3.0, 1.2, 0.0, 0.0])
+    fig, ax = plt.subplots(figsize=(4, 3))
+    ax.stairs(y, edges)
+    ax.set_yscale("log")
+    need = ab.fit_overlay_headroom(ax, floor=1e-4)
+    assert need.core == pytest.approx(1.2)
+    assert np.log10(1.2 / ax.get_ylim()[0]) == pytest.approx(ab.headroom.FLOOR_MARGIN)
+    assert [f for f in ab.check_figure(fig, inside_axes=True) if f.check == "log-range"] == []
     plt.close(fig)
