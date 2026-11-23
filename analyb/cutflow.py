@@ -210,7 +210,7 @@ def cutflow_chart(
         add_atlas_label(ax, status="Internal")
 
     pass  # constrained_layout enabled globally via matplotlibrc
-    _fit_top(ax, atlas=atlas)
+    _fit_top(ax)
     save_figure(fig, save_name, script_id=script_id, save_path=save_path, verbose=verbose)
     return fig, ax
 
@@ -289,7 +289,7 @@ def cutflow_comparison(stages, numerator, reference, *, numerator_errors=None,
     ratio_ax.set_xticks(x);ratio_ax.set_xticklabels(stages,rotation=28,ha='right',fontsize='x-small')
     for ax in (main,ratio_ax):
         ax.set_xlim(edges[0],edges[-1]);ax.grid(True,alpha=.5);ax.set_axisbelow(True)
-    _fit_top(main, atlas=True)
+    _fit_top(main)
     return fig,(main,ratio_ax)
 
 

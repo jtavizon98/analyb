@@ -137,20 +137,13 @@ def _add_legend(ax, *args, **kwargs):
     return legend
 
 
-def _fit_top(ax, *, atlas, fixed=False):
+def _fit_top(ax, *, fixed=False):
     """Last step on a plotter's main axes: fit the upper limit so the legend and label clear the data.
 
     Runs after everything that moves the layout (data, scale, legend, label, ratio panel), with the rule the save-time
     ``log-headroom`` check applies (:func:`analyb.fit_overlay_headroom`). ``fixed``: the caller set the y limits, which
     stand unless a legend or label would cover data under them.
     """
-    if ax.get_yscale() == "symlog":
-        # TEMPORARY until fit_overlay_headroom measures symlog axes (analyb branch figcheck/symlog-headroom-20261120):
-        # the previous fixed reservation of 30 % of the axis for the label.
-        if atlas:
-            lower, upper = ax.yaxis.get_transform().transform(ax.get_ylim())
-            ax.set_ylim(top=float(ax.yaxis.get_transform().inverted().transform(lower + (upper - lower) / 0.7)))
-        return
     if fixed:
         need = figcheck.overlay_need(ax)
         if need is None or need.upper <= ax.get_ylim()[1]:
@@ -450,7 +443,7 @@ def hist1d_plot(
     if atlas:
         add_atlas_label(ax, status="Internal")
 
-    _fit_top(ax, atlas=atlas)
+    _fit_top(ax)
     if save_name is not None:
         _save_figure(fig, save_name, script_id=script_id, save_path=save_path, verbose=verbose)
     return fig, ax
@@ -558,7 +551,7 @@ def hist1d_with_ratio(
     )
 
 
-    _fit_top(ax_main, atlas=atlas)
+    _fit_top(ax_main)
     if save_name is not None:
         _save_figure(fig, save_name, script_id=script_id, save_path=save_path, verbose=verbose)
     return fig, (ax_main, ax_ratio)
@@ -652,7 +645,7 @@ def hist1d_stacked(
         if atlas:
             add_atlas_label(ax, status="Internal")
 
-        _fit_top(ax, atlas=atlas)
+        _fit_top(ax)
         if save_name is not None:
             _save_figure(fig, save_name, script_id=script_id, save_path=save_path, verbose=verbose)
         return fig, ax
@@ -707,7 +700,7 @@ def hist1d_stacked(
         xlabel=xlabel, label="Data / MC", band_alpha=0.08,
     )
 
-    _fit_top(ax_main, atlas=atlas)
+    _fit_top(ax_main)
     if save_name is not None:
         _save_figure(fig, save_name, script_id=script_id, save_path=save_path, verbose=verbose)
     return fig, (ax_main, ax_ratio)
@@ -770,7 +763,7 @@ def hist1d_comparison(
         label_kwargs.update(atlas_label_kwargs or {})
         add_atlas_label(ax, **label_kwargs)
 
-    _fit_top(ax, atlas=atlas)
+    _fit_top(ax)
     if save_name is not None:
         _save_figure(fig, save_name, script_id=script_id, save_path=save_path, verbose=verbose)
     return fig, ax
@@ -992,7 +985,7 @@ def profile_plot(
     if atlas:
         add_atlas_label(ax, status="Internal")
 
-    _fit_top(ax, atlas=atlas)
+    _fit_top(ax)
     if save_name is not None:
         _save_figure(fig, save_name, script_id=script_id, save_path=save_path, verbose=verbose)
     return fig, ax
@@ -1056,7 +1049,7 @@ def efficiency_plot(
         if atlas:
             add_atlas_label(ax, status="Internal")
 
-        _fit_top(ax, atlas=atlas, fixed=ylim is not None)
+        _fit_top(ax, fixed=ylim is not None)
         if save_name is not None:
             _save_figure(fig, save_name, script_id=script_id, save_path=save_path, verbose=verbose)
         return fig, ax
@@ -1109,7 +1102,7 @@ def efficiency_plot(
     ax_ratio.set_ylabel(ratio_label, loc="top")
     ax_ratio.set_xlabel(xlabel or "", loc="right")
 
-    _fit_top(ax_main, atlas=atlas, fixed=ylim is not None)
+    _fit_top(ax_main, fixed=ylim is not None)
     if save_name is not None:
         _save_figure(fig, save_name, script_id=script_id, save_path=save_path, verbose=verbose)
     return fig, (ax_main, ax_ratio)
@@ -1205,7 +1198,7 @@ def systematic_summary_plot(
         add_atlas_label(ax, status="Internal")
 
 
-    _fit_top(ax, atlas=atlas)
+    _fit_top(ax)
     if save_name is not None:
         _save_figure(fig, save_name, script_id=script_id, save_path=save_path, verbose=verbose)
     return fig, ax
@@ -1289,7 +1282,7 @@ def plot_data_with_fit(
     if atlas:
         add_atlas_label(ax, status="Internal")
 
-    _fit_top(ax, atlas=atlas)
+    _fit_top(ax)
     if save_name is not None:
         _save_figure(fig, save_name, script_id=script_id, save_path=save_path, verbose=verbose)
     return fig, ax

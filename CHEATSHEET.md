@@ -391,8 +391,7 @@ legend, label and ratio panel: the top is the one the save-time check accepts
 unless a legend or label would cover data under it. The plotter keeps its own
 floor on log axes (every populated bin stays in view) and its tick locator, so a
 caller may still change the limits. Legends are frameless and
-inset inside the upper-right corner. Symlog axes keep a fixed 30 % label
-reservation until the fit measures symlog.
+inset inside the upper-right corner.
 
 ### Final annotation headroom (after overlays and scale)
 

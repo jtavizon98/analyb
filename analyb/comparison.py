@@ -611,7 +611,7 @@ def artifact_comparison_1d(
     ax_ratio.set_xlabel(xlabel or "", loc="right")
     ax_ratio.set_ylabel(ratio_label, loc="top")
 
-    _fit_top(ax_main, atlas=atlas)
+    _fit_top(ax_main)
     if save_name is not None:
         _save_figure(
             fig, save_name, script_id=script_id, save_path=save_path,
@@ -1410,7 +1410,7 @@ def artifact_closure_1d(
     ax_residual.set_xlabel(xlabel or "", loc="right")
     ax_residual.set_ylabel(residual_label, loc="top")
 
-    _fit_top(ax_main, atlas=atlas)
+    _fit_top(ax_main)
     if save_name is not None:
         _save_figure(
             fig, save_name, script_id=script_id, save_path=save_path,
