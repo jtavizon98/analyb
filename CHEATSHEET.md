@@ -484,10 +484,12 @@ Fit the headroom with the check's own rule instead of computing it:
 `fit_overlay_headroom(ax, *, floor=None, cap=<layout rules>, gap=None,
 raise_floor=True, prune_ticks=True)` sets the upper y limit to what
 `overlay_need` measures plus `gap` (0.1 decades on a log axis, 0.02 axes
-fraction on a linear one), at most `cap` decades above the data (default: the
+fraction on a linear or symlog one, measured in the axis scale), at most `cap` decades above the data (default: the
 `log_headroom_cap` of `set_figure_layout_rules`, the value the save-time check
 uses; over the cap the gap is dropped and a larger need is kept, so the check
-fails it). On a log axis it raises a floor more than 1.2 decades under the core
+fails it). With no box over the data the highest value still keeps a margin
+inside the frame: 0.03 decades on a log axis, 2 % of the axes height on a
+linear or symlog one. On a log axis it raises a floor more than 1.2 decades under the core
 to 0.3 decades under it, inside the same loop, so a floor raised later cannot
 stretch the headroom. It measures at 72 dpi (the PDF layout dpi; the figure's dpi
 is restored) and repeats until the limits stop moving, so a second call changes

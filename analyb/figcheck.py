@@ -4,8 +4,8 @@
 ``Figure.draw_without_rendering()`` and measures visible text, legends and
 plotted data afterwards. Each :class:`Finding` stands alone: there is no
 combined score, and an empty result never certifies that a figure is readable.
-Run it after the final limits, scales and overlays, like
-``reserve_annotation_headroom``.
+Run it after the final limits, scales and overlays, and after
+:func:`analyb.fit_overlay_headroom`.
 
 ``Finding.bbox`` is ``(x0, y0, x1, y1)`` in figure inches measured from the
 lower-left corner of the figure canvas (the saved page without
@@ -724,6 +724,20 @@ class OverlayNeed:
     core: float = None
 
 
+def _scale_maps(ax):
+    """(data -> scale, scale -> data) along y: log10 on a log axis, identity on a linear one, the axis transform on a
+    symlog one; the need is linear in these units at fixed box positions."""
+    scale = ax.get_yscale()
+    if scale == "log":
+        return np.log10, lambda u: float(10 ** u)
+    if scale == "linear":
+        return (lambda x: x), float
+    forward = ax.yaxis.get_transform()
+    backward = forward.inverted()
+    return (lambda x: float(forward.transform(np.atleast_1d(np.asarray(x, dtype=float)))[0]),
+            lambda u: float(backward.transform(np.atleast_1d(np.asarray(u, dtype=float)))[0]))
+
+
 @contextmanager
 def _layout_dpi(fig):
     dpi = fig.dpi
@@ -740,15 +754,15 @@ def _overlay_need(ax, items, floor=None, pad=0.0, boxes=False):
     With ``boxes``, also the largest need of any box over data in data units, even under the data top (None without
     one): the fit keeps its gap above such a box."""
     scale = ax.get_yscale()
-    if scale not in ("log", "linear"):
-        return None
+    if scale not in ("log", "linear", "symlog"):
+        return (None, None) if boxes else None
     log = scale == "log"
     bottom, upper = ax.get_ylim()
     lo = bottom if floor is None else float(floor)
     v = _axis_content(ax, "y", positive=log)
     if not v.size or bottom > upper or log and lo <= 0:
         return (None, None) if boxes else None   # inverted: the displayed top is the low end, headroom above the data is not defined
-    to_scale = np.log10 if log else (lambda x: x)
+    to_scale, from_scale = _scale_maps(ax)
     top = float(v.max())
     frame = ax.get_window_extent()
     inv = ax.transData.inverted()
@@ -783,23 +797,23 @@ def _overlay_need(ax, items, floor=None, pad=0.0, boxes=False):
             need_top, reason = needed, item.where
     shown = v[v >= max(LOG_CORE_FRACTION * top, lo)]   # under the floor: hidden, or a marker drawn to an earlier floor
     core = float(shown.min()) if log and shown.size else None
-    need = OverlayNeed(scale, lo, top, float(10 ** need_top if log else need_top), reason, core)
+    need = OverlayNeed(scale, lo, top, from_scale(need_top), reason, core)
     if not boxes:
         return need
-    return need, None if box_top is None else float(10 ** box_top if log else box_top)
+    return need, None if box_top is None else from_scale(box_top)
 
 
 def overlay_need(ax, *, floor=None):
     """Smallest upper y limit at which every legend and text hung from the top of ``ax`` clears the data under it.
 
-    The rule of the ``log-headroom`` check, measured on ``ax`` as laid out at ``LAYOUT_DPI`` (72, the PDF layout dpi;
+    The rule of the ``log-headroom`` check, measured on ``ax`` (log, linear or symlog y) as laid out at ``LAYOUT_DPI`` (72, the PDF layout dpi;
     the figure's dpi is restored). Boxes count when their centre lies in the upper half of the frame: the axes' own
     legends and texts, those of its twins, and figure-level ones. Each box keeps its place in axes fraction; text placed
     in data coordinates moves with the limits, so measure again after setting them (:func:`analyb.fit_overlay_headroom`
     does). ``floor`` is the lower limit to compute the need at (default: the current one); the axes are not changed.
 
-    Returns an :class:`OverlayNeed` in data units, or None for an axis neither linear nor log, an inverted axis, one
-    without painted data, or a log axis whose floor is not positive.
+    Returns an :class:`OverlayNeed` in data units, or None for another scale, an inverted axis, one without painted
+    data, or a log axis whose floor is not positive.
     """
     fig = ax.get_figure(root=True)
     with _layout_dpi(fig):

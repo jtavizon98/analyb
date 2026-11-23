@@ -10,11 +10,12 @@ import numpy as np
 from matplotlib.ticker import NullFormatter
 
 from . import config
-from .figcheck import LOG_HEADROOM_SLACK, _all_axes, _collect_items, _layout_dpi, _overlay_need
+from .figcheck import LOG_HEADROOM_SLACK, _all_axes, _collect_items, _layout_dpi, _overlay_need, _scale_maps
 
 GAP_DECADES = 0.1      # log: decades added above the need, so each box clears the data under it by about a tenth of its height
 GAP_FRACTION = 0.02    # linear: axes fraction each box keeps above the data under it
 DATA_MARGIN = 0.03     # log: decades kept above the highest data value, so it lies inside the axes
+DATA_FRACTION = 0.02   # linear, symlog: axes fraction kept above the highest data value, for the same reason
 FLOOR_BELOW_MAX = 1.2  # log: a floor farther than this many decades under the core is raised (log-range flags above 1.5)
 FLOOR_MARGIN = 0.3     # log: decades between a raised floor and the smallest core value
 TOP_TICK_ROOM = 0.06   # share of the span under the top kept free of tick labels
@@ -24,12 +25,16 @@ _RULES = object()
 assert GAP_DECADES < LOG_HEADROOM_SLACK, "a fitted axis must pass the check's slack"
 
 
-def _upper(need, box, log, gap, cap):
+def _upper(ax, need, box, log, gap, cap):
     """Upper limit from a measured need and the largest box need ``box`` (data units, None without a box over data):
-    the box need plus the gap, even when it lies under the data top; over the cap the gap is dropped, and a need beyond
-    the cap is kept (the check then fails it: shrink the legend)."""
+    the box need plus the gap, even when it lies under the data top, and never under the data margin; on a log axis,
+    over the cap the gap is dropped, and a need beyond the cap is kept (the check then fails it: shrink the legend).
+    On a linear or symlog axis the box need already holds the gap (measured with ``pad``)."""
     if not log:
-        return max(need.top, box if box is not None else need.top)
+        to_scale, from_scale = _scale_maps(ax)
+        s_lo = to_scale(need.floor)
+        upper = from_scale(s_lo + (to_scale(need.top) - s_lo) / (1 - DATA_FRACTION))
+        return max(upper, box) if box is not None else upper
     top = np.log10(need.top)
     upper = top + DATA_MARGIN
     if box is not None:
@@ -44,11 +49,10 @@ def _upper(need, box, log, gap, cap):
 def _set(ax, lo, hi, log, prune_ticks):
     ax.set_ylim(lo, hi)
     if prune_ticks:
+        to_scale, from_scale = _scale_maps(ax)
+        edge = from_scale(to_scale(hi) - TOP_TICK_ROOM * (to_scale(hi) - to_scale(lo)))
         if log:
-            edge = hi * 10 ** (-TOP_TICK_ROOM * np.log10(hi / lo))
             ax.yaxis.set_minor_formatter(NullFormatter())   # a narrow log range prints minor labels that collide
-        else:
-            edge = hi - TOP_TICK_ROOM * (hi - lo)
         ax.set_yticks([t for t in ax.get_yticks() if lo <= t <= edge])   # no tick label at the top edge
         ax.set_ylim(lo, hi)
 
@@ -70,8 +74,8 @@ def fit_overlay_headroom(ax, *, floor=None, cap=_RULES, gap=None, raise_floor=Tr
         :func:`analyb.set_figure_layout_rules`, the value the save-time check uses. A need over the cap is kept, and
         the check fails it.
     gap : float, optional
-        Room above the need: decades on a log axis (default ``GAP_DECADES``), axes fraction on a linear one (default
-        ``GAP_FRACTION``).
+        Room above the need: decades on a log axis (default ``GAP_DECADES``), axes fraction on a linear or symlog one
+        (default ``GAP_FRACTION``).
     raise_floor : bool
         Log axes: raise a floor more than ``FLOOR_BELOW_MAX`` decades under the populated core to ``FLOOR_MARGIN`` under
         it (the core of the ``log-range`` check).
@@ -81,8 +85,8 @@ def fit_overlay_headroom(ax, *, floor=None, cap=_RULES, gap=None, raise_floor=Tr
     Returns
     -------
     OverlayNeed or None
-        The need at the final limits; None (limits untouched) for an axis neither linear nor log, an inverted axis or
-        one without painted data.
+        The need at the final limits; None (limits untouched) for an axis neither linear, log nor symlog, an inverted
+        axis or one without painted data.
     """
     scale = ax.get_yscale()
     log = scale == "log"
@@ -97,7 +101,7 @@ def fit_overlay_headroom(ax, *, floor=None, cap=_RULES, gap=None, raise_floor=Tr
     lo = ax.get_ylim()[0] if floor is None else float(floor)
     if log and not lo > 0:
         raise ValueError("a log axis needs a positive floor")
-    if scale not in ("log", "linear") or ax.get_ylim()[0] > ax.get_ylim()[1]:
+    if scale not in ("log", "linear", "symlog") or ax.get_ylim()[0] > ax.get_ylim()[1]:
         return None
     fig = ax.get_figure(root=True)
     need = None
@@ -114,7 +118,7 @@ def fit_overlay_headroom(ax, *, floor=None, cap=_RULES, gap=None, raise_floor=Tr
             if log and raise_floor and need.core and np.log10(need.core / lo) > FLOOR_BELOW_MAX:
                 lo = need.core * 10 ** (-FLOOR_MARGIN)
                 need, box = _overlay_need(ax, items, floor=lo, boxes=True)   # boxes hold; the next pass measures again
-            hi = _upper(need, box, log, gap, cap)
+            hi = _upper(ax, need, box, log, gap, cap)
             _set(ax, lo, hi, log, prune_ticks)
             if np.allclose(ax.get_ylim(), before, rtol=1e-6, atol=0):
                 break

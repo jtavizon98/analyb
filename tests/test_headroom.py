@@ -223,3 +223,42 @@ def test_a_box_needing_just_under_the_data_top_still_gets_the_gap():
     fig, ax = _figure(edges, y, loc="lower center", entries=1)
     ab.fit_overlay_headroom(ax, floor=1.0, raise_floor=False)
     assert _gap_decades(fig, ax, edges, y) >= ab.headroom.GAP_DECADES - 0.01
+
+
+@pytest.mark.parametrize("loc", ["upper right", "upper left", "upper center"])
+def test_a_symlog_axis_keeps_the_gap_above_the_data(loc):
+    # wwbb plotbook: GeV distributions on symlog y (ysymlog_linthresh); measured in the axis scale, like a linear axis
+    edges, y = _spectrum(2)
+    y = np.where(np.arange(len(y)) % 7 == 0, 0.0, y)   # empty bins sit in the linear part around zero
+    fig, ax = _figure(edges, y, log=False, loc=loc)
+    ax.set_yscale("symlog", linthresh=10.0)
+    need = ab.fit_overlay_headroom(ax, floor=0.0)
+    assert need.scale == "symlog" and ax.get_ylim()[0] == 0.0
+    gap = _clearance(fig, ax, edges, y * 1.02)
+    assert gap == pytest.approx(ab.headroom.GAP_FRACTION, abs=0.005)
+    first = ax.get_ylim()
+    ab.fit_overlay_headroom(ax)
+    assert ax.get_ylim() == pytest.approx(first, rel=1e-9)
+    s = ax.yaxis.get_transform().transform
+    lo, hi = s(np.array(ax.get_ylim()))
+    ticks = s(np.asarray(ax.get_yticks(), dtype=float))
+    assert ticks.size and np.all(ticks <= hi - ab.headroom.TOP_TICK_ROOM * (hi - lo) + 1e-9)   # none at the top edge
+
+
+@pytest.mark.parametrize("scale", ["linear", "symlog"])
+def test_the_highest_data_point_stays_inside_the_frame_without_a_box_over_it(scale):
+    # thesis-metadata-36's probe: a legend clear of the data left the top error bar on the frame
+    fig, ax = plt.subplots(figsize=(6, 4))
+    x, y = np.arange(6), np.array([10, 30, 50, 40, 20, 5])
+    ax.errorbar(x, y, yerr=3, label="data")
+    ax.legend(loc="upper right")
+    if scale == "symlog":
+        ax.set_yscale("symlog", linthresh=10.0)
+    need = ab.fit_overlay_headroom(ax)
+    assert need.binding is None and need.top == pytest.approx(53.0)
+    s = ax.yaxis.get_transform().transform
+    lo, hi = s(np.array(ax.get_ylim()))
+    assert (s(np.array([53.0]))[0] - lo) / (hi - lo) == pytest.approx(1 - ab.headroom.DATA_FRACTION, abs=1e-6)
+    if scale == "linear":
+        assert 50 in ax.get_yticks()   # the 50 label is no longer at the top edge
+    plt.close(fig)
